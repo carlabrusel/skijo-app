@@ -1,0 +1,149 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes card-flip {
+  0% {
+    transform: rotateY(180deg);
+  }
+  100% {
+    transform: rotateY(0deg);
+  }
+}
+
+@keyframes card-appear {
+  0% {
+    opacity: 0;
+    transform: scale(0.8) translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes card-vanish {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.5) rotate(15deg);
+  }
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(52, 211, 153, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(52, 211, 153, 0.7);
+  }
+}
+
+.animate-card-appear {
+  animation: card-appear 0.3s ease-out;
+}
+
+.animate-card-vanish {
+  animation: card-vanish 0.4s ease-in forwards;
+}
+
+@keyframes discard-drop {
+  0% {
+    transform: scale(1.4) rotate(-8deg) translateY(-12px);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.1) rotate(3deg) translateY(2px);
+    opacity: 1;
+  }
+  75% {
+    transform: scale(0.95) rotate(-1deg) translateY(0);
+  }
+  100% {
+    transform: scale(1) rotate(0deg) translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes discard-halo {
+  0% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.7),
+      0 0 20px 4px rgba(251, 191, 36, 0.5);
+  }
+  100% {
+    box-shadow: 0 0 0 8px rgba(251, 191, 36, 0), 0 0 0 0 rgba(251, 191, 36, 0);
+  }
+}
+
+.animate-discard-drop {
+  animation: discard-drop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.animate-discard-halo {
+  animation: discard-halo 0.6s ease-out both;
+}
+
+@keyframes confetti-fall {
+  0% {
+    transform: translateY(-100vh) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100vh) rotate(720deg);
+    opacity: 0;
+  }
+}
+
+@keyframes card-rain {
+  0% {
+    transform: translateY(-15vh) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.6;
+  }
+  90% {
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(110vh) rotate(360deg);
+    opacity: 0;
+  }
+}
+
+.animate-card-rain {
+  animation: card-rain linear infinite;
+}
+
+@keyframes shake-subtle {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-2px);
+  }
+  75% {
+    transform: translateX(2px);
+  }
+}
+
+.animate-shake-subtle {
+  animation: shake-subtle 0.5s ease-in-out 2;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overscroll-behavior: none;
+}
+
+body {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
