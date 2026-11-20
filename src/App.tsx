@@ -91,7 +91,7 @@ export default function App() {
 
   return (
     <div
-      className="h-dvh max-w-md mx-auto flex flex-col overflow-hidden text-white p-2"
+      className="h-dvh max-w-md mx-auto flex flex-col overflow-hidden text-white p-2 pb-12"
       style={{
         background: 'radial-gradient(ellipse at center top, #1e3a5f 0%, #0f1e30 40%, #0a1620 100%)',
       }}
@@ -174,73 +174,4 @@ export default function App() {
           <div className="flex flex-col items-center gap-0.5">
             {state.pendingDraw ? (
               <div className="animate-card-appear">
-                <CardView card={state.pendingDraw.card} revealed={true} size="lg" highlighted={true} />
-              </div>
-            ) : (
-              <div className={`${centerCardClass} rounded-lg border-2 border-dashed border-slate-800/50 flex items-center justify-center`}>
-                <Hand size={18} className="text-slate-700" />
-              </div>
-            )}
-            <span
-              className={`text-[9px] uppercase tracking-wide flex items-center gap-0.5 transition-colors ${
-                state.pendingDraw ? 'text-emerald-400 font-semibold' : 'text-slate-500'
-              }`}
-            >
-              {state.pendingDraw && <Hand size={9} />} Mano
-            </span>
-          </div>
-        </div>
-
-        <div className="h-8 flex items-center justify-center">
-          <button
-            onClick={game.playerDiscardDrawn}
-            disabled={!(mustPlace && state.pendingDraw)}
-            className={`px-4 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg transition-opacity duration-200 flex items-center gap-1.5 ring-2 ring-amber-400/40 ${
-              mustPlace && state.pendingDraw
-                ? 'opacity-100 animate-pulse'
-                : 'opacity-0 pointer-events-none'
-            }`}
-          >
-            <ArrowDownToLine size={14} /> Descartar robada
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 min-h-0 flex flex-col justify-center border-t border-slate-800/50 px-2 pt-1 pb-1">
-        <div className="flex items-center justify-between mb-1 shrink-0">
-          <span className={`flex items-center gap-1.5 text-xs font-semibold ${isPlayerTurn ? 'text-amber-300' : 'text-emerald-400'}`}>
-            <User size={14} /> {player.name}
-            {isPlayerTurn && <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded-full">tu turno</span>}
-          </span>
-          <span className="text-xs text-slate-400">Puntos: <span className="font-bold text-emerald-300">{playerVisibleScore}</span></span>
-        </div>
-        <div className="flex justify-center">
-          <BoardGrid
-            board={player.board}
-            size="player"
-            onCellClick={onPlayerCellClick}
-            clickablePredicate={playerCellClickable}
-            highlightPredicate={playerHighlight}
-            activeTurn={isPlayerTurn}
-          />
-        </div>
-      </div>
-
-      <RulesModal open={game.rulesOpen} onClose={() => game.setRulesOpen(false)} />
-      {game.roundResult && !game.gameWinner && (
-        <RoundModal
-          result={game.roundResult}
-          roundNumber={state.roundNumber}
-          onNext={game.nextRound}
-        />
-      )}
-      {game.gameWinner && game.roundResult && (
-        <GameOverModal
-          result={game.roundResult}
-          onPlayAgain={game.playAgain}
-          onReset={game.resetGame}
-        />
-      )}
-    </div>
-  );
-}
+                <CardView card={state.pendingDraw.card} revealed={true} size="
