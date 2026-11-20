@@ -76,7 +76,7 @@ export default function App() {
 
   const deckEmpty = state.deck.length === 0;
   const discardTop = state.discard[0] ?? null;
-  const centerCardClass = 'h-[10dvh] max-h-20 aspect-[2/3]';
+  const centerCardClass = 'h-[8.5dvh] max-h-16 aspect-[2/3]';
 
   const currentActivePlayerId = state.players[state.currentPlayerIndex]?.id;
   const reorderedPlayers = [
@@ -91,7 +91,7 @@ export default function App() {
 
   return (
     <div
-      className="h-dvh max-w-md mx-auto flex flex-col overflow-hidden text-white p-2 pb-12"
+      className="h-dvh max-w-md mx-auto flex flex-col justify-between overflow-hidden text-white px-2 pt-1 pb-[calc(4.75rem+env(safe-area-inset-bottom))]"
       style={{
         background: 'radial-gradient(ellipse at center top, #1e3a5f 0%, #0f1e30 40%, #0a1620 100%)',
       }}
@@ -101,18 +101,18 @@ export default function App() {
       </div>
 
       {state.lastRoundTriggered && state.phase !== 'end_routine' && (
-        <div className="shrink-0 bg-amber-500/20 border-y border-amber-500/40 px-3 py-1 flex items-center justify-center gap-1.5 text-amber-300 text-[11px] font-semibold animate-pulse">
+        <div className="shrink-0 bg-amber-500/20 border-y border-amber-500/40 px-3 py-0.5 flex items-center justify-center gap-1.5 text-amber-300 text-[11px] font-semibold animate-pulse">
           <AlertTriangle size={12} /> ¡Última ronda!
         </div>
       )}
 
-      <div className="flex-1 min-h-0 flex flex-col justify-center px-1">
+      <div className="shrink-0 flex flex-col justify-center px-1 py-0.5">
         <OpponentsBar state={reorderedState} />
       </div>
 
-      <div className="shrink-0 py-1 flex flex-col items-center gap-1.5 z-10">
+      <div className="shrink-0 py-0.5 flex flex-col items-center gap-1 z-10">
         <p
-          className={`text-[13px] text-center px-3 py-1 rounded-full bg-slate-900/80 font-semibold leading-snug max-w-full ${
+          className={`text-xs text-center px-3 py-0.5 rounded-full bg-slate-900/80 font-semibold leading-snug max-w-full ${
             botThinking ? 'text-amber-300' : isPlayerTurn ? 'text-emerald-300' : 'text-slate-300'
           }`}
         >
@@ -137,10 +137,10 @@ export default function App() {
                   style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, transparent 30%, rgba(0,0,0,0.5) 100%)' }}
                 />
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <Layers size={20} className="text-white/70" />
+                  <Layers size={18} className="text-white/70" />
                 </div>
               </div>
-              <span className="absolute -bottom-1 -right-1 bg-slate-800 text-slate-200 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-600">
+              <span className="absolute -bottom-1 -right-1 bg-slate-800 text-slate-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-slate-600">
                 {state.deck.length}
               </span>
             </button>
@@ -164,7 +164,7 @@ export default function App() {
                 </div>
               ) : (
                 <div className={`${centerCardClass} rounded-lg border-2 border-dashed border-slate-700 flex items-center justify-center`}>
-                  <Trash2 size={18} className="text-slate-600" />
+                  <Trash2 size={16} className="text-slate-600" />
                 </div>
               )}
             </div>
@@ -174,4 +174,68 @@ export default function App() {
           <div className="flex flex-col items-center gap-0.5">
             {state.pendingDraw ? (
               <div className="animate-card-appear">
-                <CardView card={state.pendingDraw.card} revealed={true} size="
+                <CardView card={state.pendingDraw.card} revealed={true} size="lg" highlighted={true} />
+              </div>
+            ) : (
+              <div className={`${centerCardClass} rounded-lg border-2 border-dashed border-slate-800/50 flex items-center justify-center`}>
+                <Hand size={16} className="text-slate-700" />
+              </div>
+            )}
+            <span
+              className={`text-[9px] uppercase tracking-wide flex items-center gap-0.5 transition-colors ${
+                state.pendingDraw ? 'text-emerald-400 font-semibold' : 'text-slate-500'
+              }`}
+            >
+              {state.pendingDraw && <Hand size={9} />} Mano
+            </span>
+          </div>
+        </div>
+
+        {mustPlace && state.pendingDraw && (
+          <button
+            onClick={game.playerDiscardDrawn}
+            className="px-4 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 ring-2 ring-amber-400/40 animate-pulse"
+          >
+            <ArrowDownToLine size={13} /> Descartar robada
+          </button>
+        )}
+      </div>
+
+      <div className="flex-1 min-h-0 flex flex-col justify-end border-t border-slate-800/50 px-2 pt-1">
+        <div className="flex items-center justify-between mb-1 shrink-0">
+          <span className={`flex items-center gap-1.5 text-xs font-semibold ${isPlayerTurn ? 'text-amber-300' : 'text-emerald-400'}`}>
+            <User size={14} /> {player.name}
+            {isPlayerTurn && <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded-full">tu turno</span>}
+          </span>
+          <span className="text-xs text-slate-400">Puntos: <span className="font-bold text-emerald-300">{playerVisibleScore}</span></span>
+        </div>
+        <div className="flex justify-center">
+          <BoardGrid
+            board={player.board}
+            size="player"
+            onCellClick={onPlayerCellClick}
+            clickablePredicate={playerCellClickable}
+            highlightPredicate={playerHighlight}
+            activeTurn={isPlayerTurn}
+          />
+        </div>
+      </div>
+
+      <RulesModal open={game.rulesOpen} onClose={() => game.setRulesOpen(false)} />
+      {game.roundResult && !game.gameWinner && (
+        <RoundModal
+          result={game.roundResult}
+          roundNumber={state.roundNumber}
+          onNext={game.nextRound}
+        />
+      )}
+      {game.gameWinner && game.roundResult && (
+        <GameOverModal
+          result={game.roundResult}
+          onPlayAgain={game.playAgain}
+          onReset={game.resetGame}
+        />
+      )}
+    </div>
+  );
+}
