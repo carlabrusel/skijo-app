@@ -7,14 +7,13 @@ import { CardView } from '@/components/CardView';
 import { SetupModal } from '@/components/SetupModal';
 import { RulesModal, RoundModal, GameOverModal } from '@/components/Modals';
 import { getVisibleScore } from '@/game/board';
-import { PLAYER_ID } from '@/game/types';
 import { Layers, Trash2, Hand, ArrowDownToLine, User, AlertTriangle } from 'lucide-react';
 
 export default function App() {
   const game = useSkyjo();
-  const { state } = game;
+  const { state, localPlayerId } = game;
 
-  const player = state?.players.find(p => p.id === PLAYER_ID) ?? null;
+  const player = state?.players.find(p => p.id === localPlayerId) ?? state?.players[0] ?? null;
   const playerVisibleScore = useMemo(
     () => (player ? getVisibleScore(player.board) : 0),
     [player?.board]
@@ -26,6 +25,8 @@ export default function App() {
         <SetupModal
           open={game.setupOpen || !state}
           onStart={(playerCount, aiLevel) => game.startGame({ playerCount, aiLevel })}
+          onStartOnline={game.startOnlineGame}
+          onJoinStartedOnline={game.joinStartedOnlineGame}
           memory={game.memory}
           onResetMemory={game.resetAdaptiveMemory}
         />
@@ -34,7 +35,7 @@ export default function App() {
     );
   }
 
-  const isPlayerTurn = state.players[state.currentPlayerIndex]?.id === PLAYER_ID;
+  const isPlayerTurn = state.players[state.currentPlayerIndex]?.id === localPlayerId;
   const isInitialReveal = state.phase === 'reveal_initial';
   const isPlaying = state.phase === 'playing';
   const canChooseSource = isPlaying && isPlayerTurn && state.stage === 'choose_source';
@@ -43,7 +44,7 @@ export default function App() {
   const botThinking = isPlaying && !isPlayerTurn;
 
   const playerCellClickable = (i: number) => {
-    if (isInitialReveal && state.initialRevealed[PLAYER_ID] < 2) {
+    if (isInitialReveal && (state.initialRevealed[localPlayerId] ?? 0) < 2) {
       const c = player.board[i];
       return !c.revealed && !c.eliminated && !!c.card;
     }
@@ -62,7 +63,7 @@ export default function App() {
   };
 
   const playerHighlight = (i: number) => {
-    if (isInitialReveal && state.initialRevealed[PLAYER_ID] < 2) {
+    if (isInitialReveal && (state.initialRevealed[localPlayerId] ?? 0) < 2) {
       const c = player.board[i];
       return !c.revealed && !c.eliminated && !!c.card;
     }
@@ -75,8 +76,16 @@ export default function App() {
 
   const deckEmpty = state.deck.length === 0;
   const discardTop = state.discard[0] ?? null;
-
   const centerCardClass = 'h-[10dvh] max-h-20 aspect-[2/3]';
+
+  // Reordenamos visualmente para que OpponentsBar muestre a los demás arriba aunque nuestro ID no sea 'player'
+  const reorderedState = {
+    ...state,
+    players: [
+      player,
+      ...state.players.filter(p => p.id !== localPlayerId),
+    ],
+  };
 
   return (
     <div
@@ -99,7 +108,7 @@ export default function App() {
 
       {/* Block 2 - Opponents zone */}
       <div className="flex-1 min-h-0 flex flex-col justify-center px-1">
-        <OpponentsBar state={state} />
+        <OpponentsBar state={reorderedState} />
       </div>
 
       {/* Block 3 - Center zone */}
@@ -207,7 +216,7 @@ export default function App() {
       <div className="flex-1 min-h-0 flex flex-col justify-center border-t border-slate-800/50 px-2 pt-1 pb-1">
         <div className="flex items-center justify-between mb-1 shrink-0">
           <span className={`flex items-center gap-1.5 text-xs font-semibold ${isPlayerTurn ? 'text-amber-300' : 'text-emerald-400'}`}>
-            <User size={14} /> Tú
+            <User size={14} /> {player.name}
             {isPlayerTurn && <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded-full">tu turno</span>}
           </span>
           <span className="text-xs text-slate-400">Puntos: <span className="font-bold text-emerald-300">{playerVisibleScore}</span></span>
