@@ -56,15 +56,23 @@ export function SetupModal({
   // Sincronizar sala de espera cada 1.2s mientras estamos en el lobby
   useEffect(() => {
     if (!open || !room) return;
+    let active = true;
     const interval = setInterval(async () => {
+      if (!active) return;
       const fresh = await getRoom(room.code);
-      if (!fresh) return;
+      if (!fresh || !active) return;
       setRoom(fresh);
       if (fresh.status === 'playing' && fresh.game_state) {
+        active = false;
+        clearInterval(interval);
+        setRoom(null);
         onJoinStartedOnline(fresh, myId);
       }
     }, 1200);
-    return () => clearInterval(interval);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, [open, room, myId, onJoinStartedOnline]);
 
   if (!open) return null;
@@ -106,6 +114,7 @@ export function SetupModal({
       const joined = await joinRoom(joinCode, myId, playerName);
       setRoom(joined);
       if (joined.status === 'playing' && joined.game_state) {
+        setRoom(null);
         onJoinStartedOnline(joined, myId);
       }
     } catch (e) {
@@ -380,7 +389,11 @@ export function SetupModal({
                   )}
 
                   <button
-                    onClick={() => onStartOnline(room, myId, fillWithBots)}
+                    onClick={() => {
+                      const currentRoom = room;
+                      setRoom(null);
+                      onStartOnline(currentRoom, myId, fillWithBots);
+                    }}
                     disabled={room.players.length < 2 && !fillWithBots}
                     className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 text-sm"
                   >
