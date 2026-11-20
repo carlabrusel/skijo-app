@@ -78,13 +78,15 @@ export default function App() {
   const discardTop = state.discard[0] ?? null;
   const centerCardClass = 'h-[10dvh] max-h-20 aspect-[2/3]';
 
-  // Reordenamos visualmente para que OpponentsBar muestre a los demás arriba aunque nuestro ID no sea 'player'
+  const currentActivePlayerId = state.players[state.currentPlayerIndex]?.id;
+  const reorderedPlayers = [
+    player,
+    ...state.players.filter(p => p.id !== localPlayerId),
+  ];
   const reorderedState = {
     ...state,
-    players: [
-      player,
-      ...state.players.filter(p => p.id !== localPlayerId),
-    ],
+    players: reorderedPlayers,
+    currentPlayerIndex: Math.max(0, reorderedPlayers.findIndex(p => p.id === currentActivePlayerId)),
   };
 
   return (
@@ -94,24 +96,20 @@ export default function App() {
         background: 'radial-gradient(ellipse at center top, #1e3a5f 0%, #0f1e30 40%, #0a1620 100%)',
       }}
     >
-      {/* Block 1 - Top bar */}
       <div className="shrink-0">
-        <TopBar state={state} memory={game.memory} onRules={() => game.setRulesOpen(true)} onReset={game.resetGame} />
+        <TopBar state={reorderedState} memory={game.memory} onRules={() => game.setRulesOpen(true)} onReset={game.resetGame} />
       </div>
 
-      {/* Last round banner */}
       {state.lastRoundTriggered && state.phase !== 'end_routine' && (
         <div className="shrink-0 bg-amber-500/20 border-y border-amber-500/40 px-3 py-1 flex items-center justify-center gap-1.5 text-amber-300 text-[11px] font-semibold animate-pulse">
           <AlertTriangle size={12} /> ¡Última ronda!
         </div>
       )}
 
-      {/* Block 2 - Opponents zone */}
       <div className="flex-1 min-h-0 flex flex-col justify-center px-1">
         <OpponentsBar state={reorderedState} />
       </div>
 
-      {/* Block 3 - Center zone */}
       <div className="shrink-0 py-1 flex flex-col items-center gap-1.5 z-10">
         <p
           className={`text-[13px] text-center px-3 py-1 rounded-full bg-slate-900/80 font-semibold leading-snug max-w-full ${
@@ -122,7 +120,6 @@ export default function App() {
         </p>
 
         <div className="flex items-end gap-3 sm:gap-5">
-          {/* Deck */}
           <div className="flex flex-col items-center gap-0.5">
             <button
               onClick={canChooseSource ? game.playerDrawDeck : undefined}
@@ -150,7 +147,6 @@ export default function App() {
             <span className="text-[9px] text-slate-400 uppercase tracking-wide">Mazo</span>
           </div>
 
-          {/* Discard */}
           <div className="flex flex-col items-center gap-0.5">
             <div
               key={discardTop ? discardTop.id : 'empty-discard'}
@@ -175,7 +171,6 @@ export default function App() {
             <span className="text-[9px] text-slate-400 uppercase tracking-wide">Descarte</span>
           </div>
 
-          {/* Hand */}
           <div className="flex flex-col items-center gap-0.5">
             {state.pendingDraw ? (
               <div className="animate-card-appear">
@@ -196,7 +191,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Espacio reservado fijo para el botón Descartar robada */}
         <div className="h-8 flex items-center justify-center">
           <button
             onClick={game.playerDiscardDrawn}
@@ -212,7 +206,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Block 4 - Player board */}
       <div className="flex-1 min-h-0 flex flex-col justify-center border-t border-slate-800/50 px-2 pt-1 pb-1">
         <div className="flex items-center justify-between mb-1 shrink-0">
           <span className={`flex items-center gap-1.5 text-xs font-semibold ${isPlayerTurn ? 'text-amber-300' : 'text-emerald-400'}`}>

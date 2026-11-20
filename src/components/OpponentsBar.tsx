@@ -1,7 +1,7 @@
 import { Player, GameState } from '@/game/types';
 import { BoardGrid } from './BoardGrid';
 import { getVisibleScore } from '@/game/board';
-import { Bot } from 'lucide-react';
+import { Bot, User } from 'lucide-react';
 
 interface OpponentPanelProps {
   player: Player;
@@ -18,7 +18,11 @@ function OpponentPanel({ player, isCurrentTurn, highlightIndex, cardSize }: Oppo
     `}>
       <div className="flex items-center justify-between w-full px-1 mb-1">
         <span className={`flex items-center gap-1 text-[10px] font-bold truncate ${isCurrentTurn ? 'text-amber-300' : 'text-slate-400'}`}>
-          <Bot size={11} className={isCurrentTurn ? 'text-amber-400' : 'text-slate-500'} />
+          {player.isBot ? (
+            <Bot size={11} className={isCurrentTurn ? 'text-amber-400' : 'text-slate-500'} />
+          ) : (
+            <User size={11} className={isCurrentTurn ? 'text-amber-400' : 'text-slate-500'} />
+          )}
           {player.name.replace('Bot ', '')}
         </span>
         <span className={`text-[10px] font-bold ${isCurrentTurn ? 'text-amber-300' : 'text-slate-400'}`}>
@@ -40,18 +44,18 @@ interface OpponentsBarProps {
 }
 
 export function OpponentsBar({ state }: OpponentsBarProps) {
-  const opponents = state.players.filter(p => p.isBot);
+  const opponents = state.players.slice(1);
   const currentId = state.players[state.currentPlayerIndex]?.id;
   const cardSize: 'opp' | 'opp-sm' = opponents.length > 1 ? 'opp-sm' : 'opp';
 
   return (
     <div className="flex gap-1.5 justify-center">
-      {opponents.map(bot => (
+      {opponents.map(opp => (
         <OpponentPanel
-          key={bot.id}
-          player={bot}
-          isCurrentTurn={currentId === bot.id}
-          highlightIndex={state.pendingHighlight?.player === bot.id ? state.pendingHighlight.index : null}
+          key={opp.id}
+          player={opp}
+          isCurrentTurn={currentId === opp.id}
+          highlightIndex={state.pendingHighlight?.player === opp.id ? state.pendingHighlight.index : null}
           cardSize={cardSize}
         />
       ))}
