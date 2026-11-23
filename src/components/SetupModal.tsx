@@ -199,7 +199,7 @@ export function SetupModal({
                   ))}
                 </div>
                 <p className="text-xs text-slate-500 mt-1.5">
-                  {playerCount === 2 ? 'Tú vs 1 bot' : playerCount === 3 ? 'Tú vs 2 bots (Ana, Leo)' : 'Tú vs 3 bots (Ana, Leo, Max)'}
+                  {playerCount === 2 ? 'Tú vs 1 bot' : `Tú vs ${playerCount - 1} bots`}
                 </p>
               </div>
 

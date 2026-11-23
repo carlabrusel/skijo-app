@@ -3,11 +3,12 @@ const SUPABASE_KEY = 'sb_publishable_yjEq7NshLjbsyj9958aSPw__c7DbhFV';
 
 const REST_URL = `${SUPABASE_URL}/rest/v1/skyjo_rooms`;
 
-const headers = {
+const headers: Record<string, string> = {
   apikey: SUPABASE_KEY,
   Authorization: `Bearer ${SUPABASE_KEY}`,
   'Content-Type': 'application/json',
   Prefer: 'return=representation',
+  'Cache-Control': 'no-cache, no-store, must-revalidate',
 };
 
 export interface OnlineLobbyPlayer {
@@ -71,9 +72,13 @@ export async function createRoom(hostId: string, hostName: string): Promise<Onli
 
 export async function getRoom(code: string): Promise<OnlineRoomRow | null> {
   const clean = code.trim().toUpperCase();
-  const res = await fetch(`${REST_URL}?code=eq.${encodeURIComponent(clean)}&select=*`, {
-    headers,
-  });
+  const res = await fetch(
+    `${REST_URL}?code=eq.${encodeURIComponent(clean)}&select=*&_t=${Date.now()}`,
+    {
+      headers,
+      cache: 'no-store',
+    }
+  );
   if (!res.ok) return null;
   const data = await res.json();
   return data[0] ?? null;
@@ -114,8 +119,8 @@ export async function joinRoom(code: string, playerId: string, playerName: strin
 export async function updateRoomState(
   code: string,
   patch: Partial<Pick<OnlineRoomRow, 'status' | 'players' | 'game_state'>>
-): Promise<void> {
-  await fetch(`${REST_URL}?code=eq.${encodeURIComponent(code)}`, {
+): Promise<OnlineRoomRow | null> {
+  const res = await fetch(`${REST_URL}?code=eq.${encodeURIComponent(code)}`, {
     method: 'PATCH',
     headers,
     body: JSON.stringify({
@@ -123,4 +128,7 @@ export async function updateRoomState(
       updated_at: new Date().toISOString(),
     }),
   });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data[0] ?? null;
 }
