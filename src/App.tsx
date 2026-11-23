@@ -91,7 +91,7 @@ export default function App() {
 
   return (
     <div
-      className="h-dvh max-w-md mx-auto flex flex-col justify-between overflow-hidden text-white px-2 pt-1 pb-[calc(4.75rem+env(safe-area-inset-bottom))]"
+      className="h-dvh max-w-md mx-auto flex flex-col justify-between overflow-hidden text-white px-2 pt-1 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"
       style={{
         background: 'radial-gradient(ellipse at center top, #1e3a5f 0%, #0f1e30 40%, #0a1620 100%)',
       }}

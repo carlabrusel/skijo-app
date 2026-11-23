@@ -22,7 +22,7 @@ function buildPlayers(config: GameConfig): Player[] {
   for (let i = 0; i < config.playerCount - 1; i++) {
     players.push({
       id: BOT_IDS[i],
-      name: `Bot ${BOT_NAMES[i]}`,
+      name: BOT_NAMES[i],
       isBot: true,
       board: emptyBoard(),
       score: 0,
@@ -740,6 +740,7 @@ export function useSkyjo() {
 
   return {
     state,
+    localPlayerId: PLAYER_ID,
     roundResult,
     rulesOpen,
     setupOpen,
