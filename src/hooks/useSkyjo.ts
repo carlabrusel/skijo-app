@@ -12,8 +12,18 @@ import {
 } from '@/game/board';
 import { decideBotMove, decideBotPlacement } from '@/game/bot';
 import { loadMemory, resetMemory, evolveMemory } from '@/game/memory';
+import {
+  OnlineRoomRow,
+  getRoom,
+  updateRoomState,
+} from '@/lib/supabase';
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+type SyncedGameState = GameState & {
+  _rev?: number;
+  _roundResult?: RoundResult | null;
+};
 
 function buildPlayers(config: GameConfig): Player[] {
   const players: Player[] = [
@@ -22,7 +32,7 @@ function buildPlayers(config: GameConfig): Player[] {
   for (let i = 0; i < config.playerCount - 1; i++) {
     players.push({
       id: BOT_IDS[i],
-      name: `Bot ${BOT_NAMES[i]}`,
+      name: BOT_NAMES[i],
       isBot: true,
       board: emptyBoard(),
       score: 0,
@@ -31,7 +41,7 @@ function buildPlayers(config: GameConfig): Player[] {
   return players;
 }
 
-function dealNewRound(state: GameState): GameState {
+function dealNewRound(state: SyncedGameState, isOnline = false): SyncedGameState {
   const deck = shuffle(createDeck());
   const players = state.players.map(p => {
     const cards = deck.splice(0, 12);
@@ -51,7 +61,9 @@ function dealNewRound(state: GameState): GameState {
     stage: 'choose_source',
     currentPlayerIndex: 0,
     pendingDraw: null,
-    lastAction: 'Voltea 2 de tus cartas para empezar',
+    lastAction: isOnline
+      ? 'Voltead 2 cartas cada uno para empezar'
+      : 'Voltea 2 de tus cartas para empezar',
     lastRoundTriggered: false,
     lastRoundCloser: null,
     lastRoundRemaining: [],
@@ -60,11 +72,13 @@ function dealNewRound(state: GameState): GameState {
     pendingHighlight: null,
     discardCounts,
     discardPulse: false,
+    _rev: (state._rev ?? 0) + 1,
+    _roundResult: null,
   };
 }
 
-function freshState(config: GameConfig): GameState {
-  const players = buildPlayers(config);
+function freshState(config: GameConfig, customPlayers?: Player[]): SyncedGameState {
+  const players = customPlayers ?? buildPlayers(config);
   return {
     config,
     players,
@@ -85,6 +99,8 @@ function freshState(config: GameConfig): GameState {
     turnOrder: players.map(p => p.id),
     discardCounts: {},
     discardPulse: false,
+    _rev: 1,
+    _roundResult: null,
   };
 }
 
@@ -93,28 +109,207 @@ function updateDiscardCounts(counts: Record<number, number>, card: Card): Record
 }
 
 export function useSkyjo() {
-  const [state, setState] = useState<GameState | null>(null);
+  const [state, setState] = useState<SyncedGameState | null>(null);
+  const [localPlayerId, setLocalPlayerId] = useState<string>(PLAYER_ID);
+  const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [hostId, setHostId] = useState<string | null>(null);
   const [roundResult, setRoundResult] = useState<RoundResult | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(true);
   const [gameWinner, setGameWinner] = useState<string | null>(null);
   const [memory, setMemory] = useState<AdaptiveMemory>(() => loadMemory());
+
   const busyRef = useRef(false);
   const roundTurnsRef = useRef(0);
   const pendingFinishRef = useRef<{ result: RoundResult } | null>(null);
 
+  // Control anti-rebote para sincronización online
+  const localRevRef = useRef<number>(0);
+  const syncLockUntilRef = useRef<number>(0);
+  const pushInFlightRef = useRef<boolean>(false);
+  const queuedPushStateRef = useRef<SyncedGameState | null>(null);
+
+  const isOnline = Boolean(roomCode);
+  const isHost = !isOnline || hostId === localPlayerId;
+
+  const pushOnlineState = useCallback(
+    async (nextState: SyncedGameState) => {
+      if (!roomCode) return;
+      const nextRev = Math.max(localRevRef.current + 1, (nextState._rev ?? 0) + 1);
+      const stamped: SyncedGameState = { ...nextState, _rev: nextRev };
+      localRevRef.current = nextRev;
+      // Bloquea lecturas remotas viejas durante 1.8s mientras Supabase confirma la escritura
+      syncLockUntilRef.current = Date.now() + 1800;
+
+      if (pushInFlightRef.current) {
+        queuedPushStateRef.current = stamped;
+        return;
+      }
+
+      pushInFlightRef.current = true;
+      let toSend: SyncedGameState | null = stamped;
+      try {
+        while (toSend) {
+          queuedPushStateRef.current = null;
+          await updateRoomState(roomCode, {
+            status: 'playing',
+            game_state: toSend,
+          });
+          syncLockUntilRef.current = Date.now() + 700;
+          toSend = queuedPushStateRef.current;
+        }
+      } finally {
+        pushInFlightRef.current = false;
+      }
+    },
+    [roomCode]
+  );
+
+  const applyLocalMutation = useCallback(
+    (updater: (prev: SyncedGameState) => SyncedGameState | null) => {
+      setState(prev => {
+        if (!prev) return prev;
+        const next = updater(prev);
+        if (!next || next === prev) return prev;
+        if (roomCode) {
+          const nextRev = Math.max(localRevRef.current + 1, (next._rev ?? 0) + 1);
+          const stamped = { ...next, _rev: nextRev };
+          localRevRef.current = nextRev;
+          syncLockUntilRef.current = Date.now() + 1800;
+          void pushOnlineState(stamped);
+          return stamped;
+        }
+        return next;
+      });
+    },
+    [roomCode, pushOnlineState]
+  );
+
+  // Sincronización periódica (polling protegido contra rebote) en modo online
+  useEffect(() => {
+    if (!roomCode) return;
+    let active = true;
+
+    const poll = async () => {
+      if (!active) return;
+      // Si acabamos de hacer una jugada local o estamos subiendo cambios, ignorar lectura para evitar rebote
+      if (pushInFlightRef.current || Date.now() < syncLockUntilRef.current) {
+        return;
+      }
+      const remote = await getRoom(roomCode);
+      if (!active || !remote || !remote.game_state) return;
+      if (pushInFlightRef.current || Date.now() < syncLockUntilRef.current) {
+        return;
+      }
+
+      const remoteState = remote.game_state as SyncedGameState;
+      const remoteRev = remoteState._rev ?? 0;
+
+      if (remoteRev > localRevRef.current) {
+        localRevRef.current = remoteRev;
+        setState(remoteState);
+        if (remoteState._roundResult !== undefined) {
+          setRoundResult(remoteState._roundResult);
+          setGameWinner(remoteState._roundResult?.winner ?? null);
+        }
+      }
+    };
+
+    const interval = setInterval(poll, 650);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [roomCode]);
+
   const startGame = useCallback((config: GameConfig) => {
     roundTurnsRef.current = 0;
     pendingFinishRef.current = null;
+    localRevRef.current = 1;
+    syncLockUntilRef.current = 0;
+    setRoomCode(null);
+    setHostId(null);
+    setLocalPlayerId(PLAYER_ID);
     setRoundResult(null);
     setGameWinner(null);
     setSetupOpen(false);
-    setState(() => dealNewRound(freshState(config)));
+    setState(() => dealNewRound(freshState(config), false));
+  }, []);
+
+  const startOnlineGame = useCallback(
+    async (room: OnlineRoomRow, myPlayerId: string, fillWithBots: boolean) => {
+      roundTurnsRef.current = 0;
+      pendingFinishRef.current = null;
+      const players: Player[] = room.players.map(p => ({
+        id: p.id,
+        name: p.name,
+        isBot: false,
+        board: emptyBoard(),
+        score: 0,
+      }));
+
+      if (fillWithBots) {
+        let botIdx = 0;
+        while (players.length < 4 && botIdx < BOT_NAMES.length) {
+          players.push({
+            id: BOT_IDS[botIdx],
+            name: BOT_NAMES[botIdx],
+            isBot: true,
+            board: emptyBoard(),
+            score: 0,
+          });
+          botIdx++;
+        }
+      }
+
+      const initial = dealNewRound(
+        freshState({ playerCount: players.length, aiLevel: 'hard' }, players),
+        true
+      );
+      localRevRef.current = initial._rev ?? 1;
+      syncLockUntilRef.current = Date.now() + 2000;
+
+      setRoomCode(room.code);
+      setHostId(room.host_id);
+      setLocalPlayerId(myPlayerId);
+      setRoundResult(null);
+      setGameWinner(null);
+      setSetupOpen(false);
+      setState(initial);
+
+      await updateRoomState(room.code, {
+        status: 'playing',
+        game_state: initial,
+      });
+    },
+    []
+  );
+
+  const joinStartedOnlineGame = useCallback((room: OnlineRoomRow, myPlayerId: string) => {
+    const incoming = room.game_state as SyncedGameState | null;
+    if (!incoming) return;
+    roundTurnsRef.current = 0;
+    pendingFinishRef.current = null;
+    localRevRef.current = incoming._rev ?? 1;
+    syncLockUntilRef.current = 0;
+
+    setRoomCode(room.code);
+    setHostId(room.host_id);
+    setLocalPlayerId(myPlayerId);
+    setRoundResult(incoming._roundResult ?? null);
+    setGameWinner(incoming._roundResult?.winner ?? null);
+    setSetupOpen(false);
+    setState(incoming);
   }, []);
 
   const resetGame = useCallback(() => {
     roundTurnsRef.current = 0;
     pendingFinishRef.current = null;
+    localRevRef.current = 0;
+    syncLockUntilRef.current = 0;
+    setRoomCode(null);
+    setHostId(null);
+    setLocalPlayerId(PLAYER_ID);
     setRoundResult(null);
     setGameWinner(null);
     setSetupOpen(true);
@@ -127,20 +322,18 @@ export function useSkyjo() {
     setRoundResult(null);
     setGameWinner(null);
     setSetupOpen(false);
-    setState(s => {
-      if (!s) return dealNewRound(freshState({ playerCount: 2, aiLevel: 'hard' }));
-      return dealNewRound(freshState(s.config));
+    applyLocalMutation(s => {
+      const resetPlayers = s.players.map(p => ({ ...p, board: emptyBoard(), score: 0 }));
+      return dealNewRound(freshState(s.config, resetPlayers), Boolean(roomCode));
     });
-  }, []);
+  }, [applyLocalMutation, roomCode]);
 
   const resetAdaptiveMemory = useCallback(() => {
     const m = resetMemory();
     setMemory(m);
   }, []);
 
-  const triggerDiscardPulse = useCallback(() => {
-    // La animación del descarte se dispara limpiamente en App.tsx
-  }, []);
+  const triggerDiscardPulse = useCallback(() => {}, []);
 
   // Espera 3 segundos con todas las cartas volteadas en la mesa antes de mostrar el modal de resultados
   useEffect(() => {
@@ -150,12 +343,26 @@ export function useSkyjo() {
         pendingFinishRef.current = null;
         setRoundResult(result);
         if (result.winner) setGameWinner(result.winner);
+        if (roomCode && isHost) {
+          applyLocalMutation(prev => ({
+            ...prev,
+            _roundResult: result,
+          }));
+        }
       }, 3000);
       return () => clearTimeout(timer);
     }
-  }, [state?.phase]);
+  }, [state?.phase, roomCode, isHost, applyLocalMutation]);
 
-  const ensureDeck = useCallback((s: GameState): GameState => {
+  // En modo online, si el estado remoto ya trae _roundResult tras los 3s, mostrarlo
+  useEffect(() => {
+    if (isOnline && state?.phase === 'end_routine' && state._roundResult && !roundResult) {
+      setRoundResult(state._roundResult);
+      if (state._roundResult.winner) setGameWinner(state._roundResult.winner);
+    }
+  }, [isOnline, state?.phase, state?._roundResult, roundResult]);
+
+  const ensureDeck = useCallback((s: SyncedGameState): SyncedGameState => {
     if (s.deck.length === 0 && s.discard.length > 1) {
       const top = s.discard[0];
       const rest = s.discard.slice(1);
@@ -165,7 +372,7 @@ export function useSkyjo() {
   }, []);
 
   const checkColumnEliminations = useCallback(
-    (s: GameState, playerId: string): GameState => {
+    (s: SyncedGameState, playerId: string): SyncedGameState => {
       const player = s.players.find(p => p.id === playerId)!;
       let board = player.board;
       let discard = s.discard;
@@ -211,7 +418,7 @@ export function useSkyjo() {
   );
 
   const endRound = useCallback(
-    (s: GameState, closerId: string): GameState => {
+    (s: SyncedGameState, closerId: string): SyncedGameState => {
       const playersRevealed = s.players.map(p => ({
         ...p,
         board: p.board.map(c => (c.eliminated ? c : { ...c, revealed: true })) as Board,
@@ -268,21 +475,21 @@ export function useSkyjo() {
         winner,
       };
 
-      if (s.config.aiLevel === 'adaptive') {
-        const playerElim = countEliminated(playersRevealed.find(p => p.id === PLAYER_ID)!.board);
-        const playerRes = results.find(r => r.id === PLAYER_ID)!;
+      if (!isOnline && s.config.aiLevel === 'adaptive') {
+        const playerElim = countEliminated(playersRevealed.find(p => p.id === localPlayerId)!.board);
+        const playerRes = results.find(r => r.id === localPlayerId)!;
         const closerRes = results.find(r => r.id === closerId)!;
         const lowestRoundScore = Math.min(...results.map(r => r.roundScore));
 
         const newMem = evolveMemory(memory, {
-          playerClosed: closerId === PLAYER_ID,
+          playerClosed: closerId === localPlayerId,
           playerDoubled: playerRes.doubled,
-          botClosedAndDoubled: closerId !== PLAYER_ID && closerRes.doubled,
+          botClosedAndDoubled: closerId !== localPlayerId && closerRes.doubled,
           turnsInRound: Math.max(1, Math.floor(roundTurnsRef.current / s.players.length)),
           playerEliminatedColumns: Math.floor(playerElim / 3),
           playerWonRound: playerRes.roundScore === lowestRoundScore,
           isGameOver: someoneOver100,
-          playerWonGame: winner === PLAYER_ID,
+          playerWonGame: winner === localPlayerId,
         });
         setMemory(newMem);
       }
@@ -299,11 +506,11 @@ export function useSkyjo() {
         lastAction: '¡Ronda terminada! Revelando cartas...',
       };
     },
-    [memory]
+    [isOnline, localPlayerId, memory]
   );
 
   // ---- Gestión unificada de avance de turno y cierre de ronda ----
-  const advanceToNextPlayer = useCallback((s: GameState): GameState => {
+  const advanceToNextPlayer = useCallback((s: SyncedGameState): SyncedGameState => {
     const curIdx = s.currentPlayerIndex;
     let nextIdx = (curIdx + 1) % s.turnOrder.length;
     if (s.lastRoundTriggered && s.lastRoundCloser && s.turnOrder[nextIdx] === s.lastRoundCloser) {
@@ -318,31 +525,30 @@ export function useSkyjo() {
       lastAction: isLastTurn
         ? nextPlayer.isBot
           ? `${nextPlayer.name} juega su último turno...`
-          : '¡Última ronda! Juega tu último turno.'
+          : `¡Última ronda! Turno final de ${nextPlayer.name}`
         : nextPlayer.isBot
           ? `${nextPlayer.name} está pensando...`
-          : 'Tu turno: roba del mazo o coge del descarte',
+          : nextPlayer.id === PLAYER_ID
+            ? 'Tu turno: roba del mazo o coge del descarte'
+            : `Turno de ${nextPlayer.name}`,
       pendingDraw: null,
     };
   }, []);
 
   const completeTurn = useCallback(
-    (s: GameState, actorId: string): GameState => {
+    (s: SyncedGameState, actorId: string): SyncedGameState => {
       roundTurnsRef.current += 1;
       const actor = s.players.find(p => p.id === actorId)!;
 
       if (!s.lastRoundTriggered && allRevealed(actor.board)) {
         const remaining = s.turnOrder.length - 1;
-        const triggeredState: GameState = {
+        const triggeredState: SyncedGameState = {
           ...s,
           lastRoundTriggered: true,
           lastRoundCloser: actorId,
           lastRoundRemaining: s.turnOrder.filter(id => id !== actorId),
           remainingFinalTurns: remaining,
-          lastAction:
-            actorId === PLAYER_ID
-              ? '¡Última ronda! Cerraste.'
-              : `¡Última ronda! ${actor.name} cerró.`,
+          lastAction: `¡Última ronda! ${actor.name} cerró.`,
         };
         if (remaining <= 0) {
           return endRound(triggeredState, actorId);
@@ -352,7 +558,7 @@ export function useSkyjo() {
 
       if (s.lastRoundTriggered && actorId !== s.lastRoundCloser) {
         const nextRemaining = Math.max(0, s.remainingFinalTurns - 1);
-        const updatedState: GameState = {
+        const updatedState: SyncedGameState = {
           ...s,
           remainingFinalTurns: nextRemaining,
           lastRoundRemaining: s.lastRoundRemaining.filter(id => id !== actorId),
@@ -368,42 +574,60 @@ export function useSkyjo() {
     [advanceToNextPlayer, endRound]
   );
 
-  // ---- Player initial reveal ----
-  const revealInitialCard = useCallback((index: number) => {
-    setState(prev => {
-      if (!prev || prev.phase !== 'reveal_initial') return prev;
-      const pid = PLAYER_ID;
-      if (prev.initialRevealed[pid] >= 2) return prev;
-      const players = prev.players.map(p => {
-        if (p.id !== pid) return p;
-        const board = p.board.map((c, i) => (i === index ? { ...c, revealed: true } : c));
-        return { ...p, board };
-      });
-      const count = prev.initialRevealed[pid] + 1;
-      let next = {
-        ...prev,
-        players,
-        initialRevealed: { ...prev.initialRevealed, [pid]: count },
-        lastAction: count < 2 ? `Voltea 1 carta más (${count}/2)` : 'Preparando...',
-      };
+  // ---- Player initial reveal (soporta 1 jugador o varios humanos online) ----
+  const revealInitialCard = useCallback(
+    (index: number) => {
+      applyLocalMutation(prev => {
+        if (prev.phase !== 'reveal_initial') return prev;
+        const pid = localPlayerId;
+        const currentCount = prev.initialRevealed[pid] ?? 0;
+        if (currentCount >= 2) return prev;
 
-      if (count >= 2) {
-        let botPlayers = players;
-        for (const p of botPlayers) {
+        const cell = prev.players.find(p => p.id === pid)?.board[index];
+        if (!cell || cell.revealed || cell.eliminated) return prev;
+
+        const players = prev.players.map(p => {
+          if (p.id !== pid) return p;
+          const board = p.board.map((c, i) => (i === index ? { ...c, revealed: true } : c));
+          return { ...p, board };
+        });
+
+        const count = currentCount + 1;
+        const updatedInitialRevealed = { ...prev.initialRevealed, [pid]: count };
+
+        // Comprobar si todos los humanos han revelado ya sus 2 cartas
+        const humanPlayers = players.filter(p => !p.isBot);
+        const allHumansReady = humanPlayers.every(hp => (updatedInitialRevealed[hp.id] ?? 0) >= 2);
+
+        if (!allHumansReady) {
+          const me = players.find(p => p.id === pid);
+          return {
+            ...prev,
+            players,
+            initialRevealed: updatedInitialRevealed,
+            lastAction:
+              count < 2
+                ? `${me?.name ?? 'Jugador'}: voltea 1 carta más (${count}/2)`
+                : 'Esperando a que los demás volteen sus 2 cartas...',
+          };
+        }
+
+        // Todos los humanos listos: revelar 2 cartas a cada bot
+        let finalPlayers = players;
+        for (const p of finalPlayers) {
           if (!p.isBot) continue;
           const botHidden = hiddenIndices(p.board);
           const picks = shuffle([...botHidden]).slice(0, 2);
-          botPlayers = botPlayers.map(bp => {
+          finalPlayers = finalPlayers.map(bp => {
             if (bp.id !== p.id) return bp;
             const board = bp.board.map((c, i) => (picks.includes(i) ? { ...c, revealed: true } : c));
             return { ...bp, board };
           });
         }
-        next = { ...next, players: botPlayers };
 
         let bestId = '';
         let bestSum = -Infinity;
-        for (const p of botPlayers) {
+        for (const p of finalPlayers) {
           const revealedVals = p.board.filter(c => c.revealed && c.card).map(c => c.card!.value);
           const sum = revealedVals.reduce((a, b) => a + b, 0);
           if (sum > bestSum) {
@@ -411,27 +635,32 @@ export function useSkyjo() {
             bestId = p.id;
           }
         }
-        const startIdx = botPlayers.findIndex(p => p.id === bestId);
-        const starter = botPlayers[startIdx];
-        next = {
-          ...next,
+        const startIdx = finalPlayers.findIndex(p => p.id === bestId);
+        const starter = finalPlayers[startIdx];
+
+        return {
+          ...prev,
+          players: finalPlayers,
+          initialRevealed: updatedInitialRevealed,
           currentPlayerIndex: startIdx,
           phase: 'playing',
           stage: starter.isBot ? 'bot_thinking' : 'choose_source',
           lastAction: starter.isBot
             ? `${starter.name} empieza...`
-            : '¡Empiezas tú! Roba del mazo o coge del descarte',
+            : starter.id === PLAYER_ID
+              ? '¡Empiezas tú! Roba del mazo o coge del descarte'
+              : `¡Empieza ${starter.name}!`,
         };
-      }
-      return next;
-    });
-  }, []);
+      });
+    },
+    [applyLocalMutation, localPlayerId]
+  );
 
   // ---- Player source choice ----
   const playerTakeDiscard = useCallback(() => {
-    setState(prev => {
-      if (!prev || prev.phase !== 'playing') return prev;
-      if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
+    applyLocalMutation(prev => {
+      if (prev.phase !== 'playing') return prev;
+      if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
       if (prev.stage !== 'choose_source') return prev;
       if (prev.discard.length === 0) return prev;
       const top = prev.discard[0];
@@ -443,12 +672,12 @@ export function useSkyjo() {
         lastAction: 'Elegiste el descarte. Pulsa una carta de tu tablero para intercambiarla.',
       };
     });
-  }, []);
+  }, [applyLocalMutation, localPlayerId]);
 
   const playerDrawDeck = useCallback(() => {
-    setState(prev => {
-      if (!prev || prev.phase !== 'playing') return prev;
-      if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
+    applyLocalMutation(prev => {
+      if (prev.phase !== 'playing') return prev;
+      if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
       if (prev.stage !== 'choose_source') return prev;
       const s = ensureDeck(prev);
       if (s.deck.length === 0) return prev;
@@ -461,13 +690,13 @@ export function useSkyjo() {
         lastAction: 'Robaste del mazo. Coloca en tu tablero o descarta.',
       };
     });
-  }, [ensureDeck]);
+  }, [applyLocalMutation, ensureDeck, localPlayerId]);
 
   const playerPlaceCard = useCallback(
     (index: number) => {
-      setState(prev => {
-        if (!prev || prev.phase !== 'playing') return prev;
-        if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
+      applyLocalMutation(prev => {
+        if (prev.phase !== 'playing') return prev;
+        if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
         if (prev.stage !== 'must_place' || !prev.pendingDraw) return prev;
         const drawn = prev.pendingDraw.card;
         const player = prev.players[prev.currentPlayerIndex];
@@ -481,7 +710,7 @@ export function useSkyjo() {
           discard = [oldCard, ...discard];
           discardCounts = updateDiscardCounts(discardCounts, oldCard);
         }
-        let s: GameState = {
+        let s: SyncedGameState = {
           ...prev,
           players: prev.players.map(p => (p.id === player.id ? { ...p, board } : p)),
           discard,
@@ -489,20 +718,20 @@ export function useSkyjo() {
           pendingDraw: null,
           pendingHighlight: { player: player.id, index, action: 'place' },
           stage: 'choose_source',
-          lastAction: 'Carta colocada',
+          lastAction: `${player.name} colocó carta`,
         };
         s = checkColumnEliminations(s, player.id);
         return completeTurn(s, player.id);
       });
       triggerDiscardPulse();
     },
-    [checkColumnEliminations, completeTurn, triggerDiscardPulse]
+    [applyLocalMutation, checkColumnEliminations, completeTurn, localPlayerId, triggerDiscardPulse]
   );
 
   const playerDiscardDrawn = useCallback(() => {
-    setState(prev => {
-      if (!prev || prev.phase !== 'playing') return prev;
-      if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
+    applyLocalMutation(prev => {
+      if (prev.phase !== 'playing') return prev;
+      if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
       if (prev.stage !== 'must_place' || !prev.pendingDraw) return prev;
       const drawn = prev.pendingDraw.card;
       return {
@@ -515,45 +744,44 @@ export function useSkyjo() {
       };
     });
     triggerDiscardPulse();
-  }, [triggerDiscardPulse]);
+  }, [applyLocalMutation, localPlayerId, triggerDiscardPulse]);
 
   const playerFlipHidden = useCallback(
     (index: number) => {
-      setState(prev => {
-        if (!prev || prev.phase !== 'playing') return prev;
-        if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
+      applyLocalMutation(prev => {
+        if (prev.phase !== 'playing') return prev;
+        if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
         if (prev.stage !== 'discard_then_flip') return prev;
         const player = prev.players[prev.currentPlayerIndex];
         const cell = player.board[index];
         if (!cell.card || cell.revealed || cell.eliminated) return prev;
         const board = player.board.map((c, i) => (i === index ? { ...c, revealed: true } : c));
-        let s: GameState = {
+        let s: SyncedGameState = {
           ...prev,
           players: prev.players.map(p => (p.id === player.id ? { ...p, board } : p)),
           pendingHighlight: { player: player.id, index, action: 'flip' },
           stage: 'choose_source',
-          lastAction: 'Carta volteada',
+          lastAction: `${player.name} volteó carta`,
         };
         s = checkColumnEliminations(s, player.id);
         return completeTurn(s, player.id);
       });
     },
-    [checkColumnEliminations, completeTurn]
+    [applyLocalMutation, checkColumnEliminations, completeTurn, localPlayerId]
   );
 
   const nextRound = useCallback(() => {
     roundTurnsRef.current = 0;
     pendingFinishRef.current = null;
     setRoundResult(null);
-    setState(prev => {
-      if (!prev) return prev;
-      return dealNewRound({ ...prev, roundNumber: prev.roundNumber + 1 });
-    });
-  }, []);
+    applyLocalMutation(prev =>
+      dealNewRound({ ...prev, roundNumber: prev.roundNumber + 1 }, Boolean(roomCode))
+    );
+  }, [applyLocalMutation, roomCode]);
 
-  // ---- Bot turn runner ----
+  // ---- Bot turn runner (en online solo lo ejecuta el anfitrión para evitar duplicados) ----
   const runBotTurn = useCallback(
-    async (cur: GameState) => {
+    async (cur: SyncedGameState) => {
       let s = cur;
       const bot = s.players[s.currentPlayerIndex];
       if (!bot || !bot.isBot) return;
@@ -561,11 +789,24 @@ export function useSkyjo() {
       const playerCount = s.config.playerCount;
       const pauseMs = playerCount >= 3 ? 700 : 900;
 
-      await sleep(pauseMs);
-      s = { ...s, stage: 'bot_thinking', lastAction: `${bot.name} está pensando...` };
-      setState(s);
+      const syncBotStep = (next: SyncedGameState) => {
+        if (roomCode) {
+          const nextRev = Math.max(localRevRef.current + 1, (next._rev ?? 0) + 1);
+          const stamped = { ...next, _rev: nextRev };
+          localRevRef.current = nextRev;
+          syncLockUntilRef.current = Date.now() + 1800;
+          setState(stamped);
+          void pushOnlineState(stamped);
+          return stamped;
+        }
+        setState(next);
+        return next;
+      };
 
-      const mem = s.config.aiLevel === 'adaptive' ? memory : null;
+      await sleep(pauseMs);
+      s = syncBotStep({ ...s, stage: 'bot_thinking', lastAction: `${bot.name} está pensando...` });
+
+      const mem = !isOnline && s.config.aiLevel === 'adaptive' ? memory : null;
       const level: AILevel = s.config.aiLevel;
 
       const decision = decideBotMove(bot.board, s.discard[0] ?? null, s, level, mem);
@@ -574,12 +815,11 @@ export function useSkyjo() {
         const top = s.discard[0];
         const placeIdx = decision.placeIndex!;
         await sleep(pauseMs * 0.7);
-        s = {
+        s = syncBotStep({
           ...s,
           pendingHighlight: { player: bot.id, index: placeIdx, action: 'place' },
           lastAction: `${bot.name} coge del descarte`,
-        };
-        setState(s);
+        });
         await sleep(pauseMs);
 
         const oldCard = bot.board[placeIdx].card;
@@ -592,40 +832,37 @@ export function useSkyjo() {
           newDiscard = [oldCard, ...newDiscard];
           discardCounts = updateDiscardCounts(discardCounts, oldCard);
         }
-        s = {
+        s = syncBotStep({
           ...s,
           players: s.players.map(p => (p.id === bot.id ? { ...p, board: newBoard } : p)),
           discard: newDiscard,
           discardCounts,
           pendingHighlight: { player: bot.id, index: placeIdx, action: 'place' },
           lastAction: `${bot.name} intercambia carta`,
-        };
-        setState(s);
+        });
         if (oldCard) triggerDiscardPulse();
 
         await sleep(pauseMs * 0.65);
         const beforeElim = s.lastAction;
         s = checkColumnEliminations(s, bot.id);
         if (s.lastAction !== beforeElim) {
-          setState(s);
+          s = syncBotStep(s);
           await sleep(750);
         }
       } else {
         s = ensureDeck(s);
         if (s.deck.length === 0) {
-          s = { ...s, lastAction: `${bot.name} no pudo robar` };
-          setState(s);
+          s = syncBotStep({ ...s, lastAction: `${bot.name} no pudo robar` });
           await sleep(400);
         } else {
           const drawn = s.deck[0];
           await sleep(pauseMs * 0.6);
-          s = {
+          s = syncBotStep({
             ...s,
             pendingDraw: { card: drawn, source: 'from_mazo' },
             deck: s.deck.slice(1),
             lastAction: `${bot.name} roba del mazo`,
-          };
-          setState(s);
+          });
           await sleep(pauseMs);
 
           const placement = decideBotPlacement(
@@ -639,12 +876,11 @@ export function useSkyjo() {
 
           if (placement.place && placement.placeIndex !== null) {
             const idx = placement.placeIndex;
-            s = {
+            s = syncBotStep({
               ...s,
               pendingHighlight: { player: bot.id, index: idx, action: 'place' },
               lastAction: `${bot.name} coloca carta`,
-            };
-            setState(s);
+            });
             await sleep(pauseMs);
 
             const oldCard = s.players[s.currentPlayerIndex].board[idx].card;
@@ -657,7 +893,7 @@ export function useSkyjo() {
               newDiscard = [oldCard, ...newDiscard];
               discardCounts = updateDiscardCounts(discardCounts, oldCard);
             }
-            s = {
+            s = syncBotStep({
               ...s,
               players: s.players.map(p => (p.id === bot.id ? { ...p, board: newBoard } : p)),
               discard: newDiscard,
@@ -665,15 +901,14 @@ export function useSkyjo() {
               pendingDraw: null,
               pendingHighlight: { player: bot.id, index: idx, action: 'place' },
               lastAction: `${bot.name} intercambia`,
-            };
-            setState(s);
+            });
             if (oldCard) triggerDiscardPulse();
 
             await sleep(pauseMs * 0.65);
             const beforeElim = s.lastAction;
             s = checkColumnEliminations(s, bot.id);
             if (s.lastAction !== beforeElim) {
-              setState(s);
+              s = syncBotStep(s);
               await sleep(750);
             }
           } else {
@@ -682,16 +917,15 @@ export function useSkyjo() {
             let newBoard = s.players[s.currentPlayerIndex].board;
             if (placement.flipIndex !== null) {
               const fi = placement.flipIndex;
-              s = {
+              s = syncBotStep({
                 ...s,
                 pendingHighlight: { player: bot.id, index: fi, action: 'flip' },
                 lastAction: `${bot.name} descarta y voltea`,
-              };
-              setState(s);
+              });
               await sleep(pauseMs);
               newBoard = newBoard.map((c, i) => (i === fi ? { ...c, revealed: true } : c));
             }
-            s = {
+            s = syncBotStep({
               ...s,
               players: s.players.map(p => (p.id === bot.id ? { ...p, board: newBoard } : p)),
               discard: newDiscard,
@@ -702,15 +936,14 @@ export function useSkyjo() {
                   ? { player: bot.id, index: placement.flipIndex, action: 'flip' }
                   : null,
               lastAction: `${bot.name} descarta y voltea`,
-            };
-            setState(s);
+            });
             triggerDiscardPulse();
 
             await sleep(pauseMs * 0.65);
             const beforeElim = s.lastAction;
             s = checkColumnEliminations(s, bot.id);
             if (s.lastAction !== beforeElim) {
-              setState(s);
+              s = syncBotStep(s);
               await sleep(750);
             }
           }
@@ -718,15 +951,24 @@ export function useSkyjo() {
       }
 
       await sleep(200);
-      const cleanState: GameState = { ...s, pendingHighlight: null };
+      const cleanState: SyncedGameState = { ...s, pendingHighlight: null };
       const nextState = completeTurn(cleanState, bot.id);
-      setState(nextState);
+      syncBotStep(nextState);
     },
-    [memory, checkColumnEliminations, ensureDeck, completeTurn, triggerDiscardPulse]
+    [
+      isOnline,
+      memory,
+      checkColumnEliminations,
+      ensureDeck,
+      completeTurn,
+      triggerDiscardPulse,
+      roomCode,
+      pushOnlineState,
+    ]
   );
 
   useEffect(() => {
-    if (!state) return;
+    if (!state || !isHost) return;
     if (state.phase === 'playing' && state.stage === 'bot_thinking' && !busyRef.current) {
       const current = state.players[state.currentPlayerIndex];
       if (current && current.isBot) {
@@ -736,10 +978,11 @@ export function useSkyjo() {
         });
       }
     }
-  }, [state, runBotTurn]);
+  }, [state, isHost, runBotTurn]);
 
   return {
     state,
+    localPlayerId,
     roundResult,
     rulesOpen,
     setupOpen,
@@ -748,6 +991,8 @@ export function useSkyjo() {
     setRulesOpen,
     setSetupOpen,
     startGame,
+    startOnlineGame,
+    joinStartedOnlineGame,
     resetGame,
     playAgain,
     resetAdaptiveMemory,
