@@ -1,5 +1,6 @@
 import { Board } from '@/game/types';
 import { CardView } from './CardView';
+import { Sparkles } from 'lucide-react';
 
 interface BoardGridProps {
   board: Board;
@@ -25,7 +26,6 @@ export function BoardGrid({
   const cardSize = size;
   const gapClass = size === 'player' ? 'gap-1.5' : size === 'lg' ? 'gap-1.5 sm:gap-2' : 'gap-1';
 
-  // Detecta si la casilla resaltada pertenece a una columna que acaba de ser eliminada
   const isColumnEliminationFlash =
     highlightIndex !== null &&
     highlightIndex !== undefined &&
@@ -36,7 +36,6 @@ export function BoardGrid({
       {board.map((cell, i) => {
         const isClickable = onCellClick && clickablePredicate ? clickablePredicate(i) : !!onCellClick;
 
-        // Si se eliminó una columna, ilumina las 3 celdas de esa columna; si no, solo la casilla jugada
         const isSameEliminatedCol =
           isColumnEliminationFlash &&
           highlightIndex !== null &&
@@ -48,11 +47,15 @@ export function BoardGrid({
           isSameEliminatedCol ||
           (highlightPredicate && highlightPredicate(i));
 
+        const isMiddleEliminatedRow = isSameEliminatedCol && i >= 4 && i <= 7;
+
         return (
           <div
             key={i}
-            className={`transition-transform duration-300 ${
-              isSameEliminatedCol ? 'scale-105 animate-pulse' : ''
+            className={`relative rounded-lg transition-all duration-300 ${
+              isSameEliminatedCol
+                ? 'scale-105 ring-2 ring-amber-400 bg-amber-400/20 shadow-lg shadow-amber-400/40 animate-pulse'
+                : ''
             }`}
           >
             <CardView
@@ -65,6 +68,13 @@ export function BoardGrid({
               activeTurn={activeTurn}
               dimmed={dimmed}
             />
+            {isMiddleEliminatedRow && (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                <span className="bg-amber-400 text-slate-950 rounded-full p-1 shadow-md animate-bounce">
+                  <Sparkles size={size === 'player' ? 14 : 10} />
+                </span>
+              </div>
+            )}
           </div>
         );
       })}
