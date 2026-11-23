@@ -18,19 +18,120 @@ export interface BotPlacement {
   reason: string;
 }
 
+// Calcula la media real de puntos de las cartas que quedan sin revelar en la partida
+function getRemainingDeckAverage(state: GameState): number {
+  const counts: Record<number, number> = {
+    [-2]: 5, [-1]: 10, [0]: 15,
+    [1]: 10, [2]: 10, [3]: 10, [4]: 10, [5]: 10, [6]: 10,
+    [7]: 10, [8]: 10, [9]: 10, [10]: 10, [11]: 10, [12]: 10,
+  };
+
+  for (const [valStr, seen] of Object.entries(state.discardCounts || {})) {
+    const val = Number(valStr);
+    if (counts[val] !== undefined) {
+      counts[val] = Math.max(0, counts[val] - seen);
+    }
+  }
+
+  let totalCards = 0;
+  let totalPoints = 0;
+  for (const [valStr, rem] of Object.entries(counts)) {
+    totalCards += rem;
+    totalPoints += Number(valStr) * rem;
+  }
+
+  return totalCards > 0 ? totalPoints / totalCards : 5.3;
+}
+
+// Detecta si hay 2 cartas reveladas iguales al valor buscado en una columna,
+// sin importar si la 3ª carta está boca abajo O boca arriba con otro número
 function findColumnCompletion(board: Board, value: number): number | null {
   for (let col = 0; col < 4; col++) {
     const cells = [col, col + 4, col + 8];
     let matches = 0;
-    let placeIdx: number | null = null;
+    let targetIdx: number | null = null;
     let valid = true;
+
     for (const i of cells) {
       const c = board[i];
-      if (c.eliminated) { valid = false; break; }
-      if (!c.revealed || !c.card) { if (placeIdx === null) placeIdx = i; continue; }
-      if (c.card.value === value) matches++;
+      if (c.eliminated) {
+        valid = false;
+        break;
+      }
+      if (c.revealed && c.card && c.card.value === value) {
+        matches++;
+      } else {
+        targetIdx = i;
+      }
     }
-    if (valid && matches >= 2 && placeIdx !== null) return placeIdx;
+
+    if (valid && matches === 2 && targetIdx !== null) {
+      return targetIdx;
+    }
+  }
+  return null;
+}
+
+// Devuelve los índices de cartas que ya forman pareja en una columna para no romperlas
+function getProtectedIndices(board: Board): Set<number> {
+  const protectedSet = new Set<number>();
+  for (let col = 0; col < 4; col++) {
+    const cells = [col, col + 4, col + 8];
+    if (cells.some(i => board[i].eliminated)) continue;
+
+    const revealed = cells.filter(i => board[i].revealed && board[i].card !== null);
+    if (revealed.length >= 2) {
+      for (let a = 0; a < revealed.length; a++) {
+        for (let b = a + 1; b < revealed.length; b++) {
+          if (board[revealed[a]].card!.value === board[revealed[b]].card!.value) {
+            protectedSet.add(revealed[a]);
+            protectedSet.add(revealed[b]);
+          }
+        }
+      }
+    }
+  }
+  return protectedSet;
+}
+
+// Busca la carta visible más alta evitando romper parejas (salvo si no queda otra opción)
+function safeHighestVisibleIndex(board: Board): number | null {
+  const protectedSet = getProtectedIndices(board);
+  let bestIdx: number | null = null;
+  let bestVal = -Infinity;
+
+  for (let i = 0; i < board.length; i++) {
+    const c = board[i];
+    if (!c.eliminated && c.revealed && c.card && !protectedSet.has(i)) {
+      if (c.card.value > bestVal) {
+        bestVal = c.card.value;
+        bestIdx = i;
+      }
+    }
+  }
+
+  if (bestIdx !== null) return bestIdx;
+  return highestVisibleIndex(board);
+}
+
+// Busca si la carta robada puede hacer pareja con una carta alta/media suelta en una columna con cartas ocultas
+function findPairOpportunity(board: Board, value: number, state: GameState): number | null {
+  if (value < 4) return null;
+
+  const seenOnTable = state.discardCounts[value] || 0;
+  const totalOfValue = value <= -1 ? (value === -2 ? 5 : 10) : value === 0 ? 15 : 10;
+  if (totalOfValue - seenOnTable <= 1) return null;
+
+  for (let col = 0; col < 4; col++) {
+    const cells = [col, col + 4, col + 8];
+    if (cells.some(i => board[i].eliminated)) continue;
+
+    const revealed = cells.filter(i => board[i].revealed && board[i].card !== null);
+    const hidden = cells.filter(i => !board[i].revealed);
+
+    if (revealed.length === 1 && hidden.length >= 1 && board[revealed[0]].card!.value === value) {
+      return hidden[0];
+    }
   }
   return null;
 }
@@ -103,23 +204,34 @@ function decideEasyPlacement(board: Board, drawnValue: number): BotPlacement {
   return rev.length > 0 ? { place: true, placeIndex: rev[0], flipIndex: null, reason: 'Forzado' } : { place: false, placeIndex: null, flipIndex: null, reason: 'Sin acción' };
 }
 
-// HARD: strategic with card counting
+// HARD: strategic with card counting, minimum point gain and closing protection
 function decideHardMove(board: Board, topDiscard: Card | null, state: GameState, mem: AdaptiveMemory | null): BotDecision {
+  const bot = state.players[state.currentPlayerIndex];
+  const hidden = hiddenIndices(board);
+  const canCloseNow = hidden.length === 1;
+  const willingToClose = !canCloseNow || !bot || shouldCloseRound(bot, state, mem);
+
   if (topDiscard) {
     const v = topDiscard.value;
     const compIdx = findColumnCompletion(board, v);
     if (compIdx !== null) {
-      return { source: 'discard', placeIndex: compIdx, flipIndex: null, reason: 'Completa columna con descarte' };
+      const pointsSaved = v * 2;
+      if (!canCloseNow || willingToClose || pointsSaved >= 8) {
+        return { source: 'discard', placeIndex: compIdx, flipIndex: null, reason: 'Completa columna con descarte' };
+      }
     }
+
     const threshold = mem ? mem.stealThreshold : 3;
+    const minGain = hidden.length > 0 ? (v <= 1 ? 2 : 3) : 1;
+
     if (v <= threshold) {
-      const hi = highestVisibleIndex(board);
-      if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) > v) {
+      const hi = safeHighestVisibleIndex(board);
+      const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
+      if (hi !== null && hiVal !== null && hiVal - v >= minGain) {
         return { source: 'discard', placeIndex: hi, flipIndex: null, reason: 'Coge descarte barato, quita alta' };
       }
       const visVals = getVisibleValues(board);
-      if (visVals.every(val => val <= threshold) && hiddenIndices(board).length > 0) {
-        const hidden = hiddenIndices(board);
+      if (visVals.every(val => val <= threshold) && hidden.length > 0 && willingToClose) {
         return { source: 'discard', placeIndex: hidden[0], flipIndex: null, reason: 'Coge descarte, revela oculta' };
       }
     }
@@ -128,40 +240,56 @@ function decideHardMove(board: Board, topDiscard: Card | null, state: GameState,
 }
 
 function decideHardPlacement(board: Board, drawnValue: number, state: GameState, mem: AdaptiveMemory | null): BotPlacement {
+  const bot = state.players[state.currentPlayerIndex];
+  const hidden = hiddenIndices(board);
+  const canCloseNow = hidden.length === 1;
+  const willingToClose = !canCloseNow || !bot || shouldCloseRound(bot, state, mem);
+
   const compIdx = findColumnCompletion(board, drawnValue);
   if (compIdx !== null) {
     return { place: true, placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
   }
 
-  const seenOnTable = state.discardCounts[drawnValue] || 0;
-  const totalOfValue = drawnValue <= -1 ? (drawnValue === -2 ? 5 : 10) : drawnValue === 0 ? 15 : 10;
-  const remaining = totalOfValue - seenOnTable;
-  void remaining;
-
-  if (drawnValue <= 4) {
-    const hi = highestVisibleIndex(board);
+  if (canCloseNow && !willingToClose) {
+    const hi = safeHighestVisibleIndex(board);
     if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) > drawnValue) {
-      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Sustituye alta visible' };
+      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Evita cerrar todavía, baja puntos' };
     }
-    const visVals = getVisibleValues(board);
-    const hasHighVisible = visVals.some(v => v > 4);
-    if (!hasHighVisible) {
-      const hidden = hiddenIndices(board);
-      if (hidden.length > 0) {
-        return { place: true, placeIndex: hidden[0], flipIndex: null, reason: 'Sustituye oculta' };
-      }
-    }
-    const hidden = hiddenIndices(board);
-    if (hidden.length > 0) {
-      return { place: true, placeIndex: hidden[0], flipIndex: null, reason: 'Coloca en oculta' };
-    }
-    if (hi !== null) return { place: true, placeIndex: hi, flipIndex: null, reason: 'Coloca en visible' };
   }
 
-  const hidden = hiddenIndices(board);
+  const minGain = hidden.length > 0 ? (drawnValue <= 2 ? 2 : 3) : 1;
+
+  if (drawnValue <= 4) {
+    const hi = safeHighestVisibleIndex(board);
+    const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
+    if (hi !== null && hiVal !== null && hiVal - drawnValue >= minGain) {
+      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Sustituye alta visible' };
+    }
+    if (hidden.length > 0 && willingToClose && (drawnValue <= 2 || (hiVal !== null && hiVal <= 4))) {
+      return { place: true, placeIndex: hidden[0], flipIndex: null, reason: 'Coloca carta baja en oculta' };
+    }
+    if (hi !== null && hiVal !== null && hiVal > drawnValue && hidden.length === 0) {
+      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Coloca en visible' };
+    }
+  }
+
+  if (hidden.length > 1 || willingToClose) {
+    const pairIdx = findPairOpportunity(board, drawnValue, state);
+    if (pairIdx !== null && drawnValue <= 8) {
+      return { place: true, placeIndex: pairIdx, flipIndex: null, reason: 'Forma pareja para columna' };
+    }
+  }
+
   if (hidden.length > 0) {
+    if (canCloseNow && !willingToClose) {
+      const hi = highestVisibleIndex(board);
+      if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) > drawnValue) {
+        return { place: true, placeIndex: hi, flipIndex: null, reason: 'Retrasa cierre cambiando visible' };
+      }
+    }
+
     const twoSame = findColumnWithTwoSameVisible(board);
-    if (twoSame) {
+    if (twoSame && (hidden.length > 1 || willingToClose)) {
       return { place: false, placeIndex: null, flipIndex: twoSame.flipIdx, reason: 'Descarta, voltea columna prometedora' };
     }
     let bestFlip = hidden[0];
@@ -180,13 +308,13 @@ function decideHardPlacement(board: Board, drawnValue: number, state: GameState,
     return { place: false, placeIndex: null, flipIndex: bestFlip, reason: 'Descarta, voltea estratégico' };
   }
 
-  const hi = highestVisibleIndex(board);
+  const hi = safeHighestVisibleIndex(board);
   if (hi !== null) return { place: true, placeIndex: hi, flipIndex: null, reason: 'Forzado' };
   const rev = revealedIndices(board);
   return rev.length > 0 ? { place: true, placeIndex: rev[0], flipIndex: null, reason: 'Forzado' } : { place: false, placeIndex: null, flipIndex: null, reason: 'Sin acción' };
 }
 
-// ADAPTIVE: aprende del estilo del jugador, controla riesgo de cierre y escala con el nivel
+// ADAPTIVE: aprende del estilo del jugador, controla riesgo de cierre y exige ganancia real al cambiar
 function decideAdaptiveMove(board: Board, topDiscard: Card | null, state: GameState, mem: AdaptiveMemory): BotDecision {
   const bot = state.players[state.currentPlayerIndex];
   const hidden = hiddenIndices(board);
@@ -197,18 +325,22 @@ function decideAdaptiveMove(board: Board, topDiscard: Card | null, state: GameSt
     const v = topDiscard.value;
     const compIdx = findColumnCompletion(board, v);
     if (compIdx !== null) {
-      return { source: 'discard', placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
+      const pointsSaved = v * 2;
+      if (!canCloseNow || willingToClose || pointsSaved >= 8) {
+        return { source: 'discard', placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
+      }
     }
 
-    // Si el jugador se centra en eliminar columnas, el bot roba cartas repetidas potenciales (<= 2)
     const effectiveThreshold = mem.playerColumnFocus >= 2 ? Math.max(mem.stealThreshold, 3.5) : mem.stealThreshold;
+    const minGain = hidden.length > 0 ? (v <= 1 ? 2 : 3) : 1;
 
     if (v <= effectiveThreshold) {
-      const hi = highestVisibleIndex(board);
-      if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) > v) {
+      const hi = safeHighestVisibleIndex(board);
+      const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
+      if (hi !== null && hiVal !== null && hiVal - v >= minGain) {
         return { source: 'discard', placeIndex: hi, flipIndex: null, reason: 'Coge descarte adaptado' };
       }
-      if (hidden.length > 0 && willingToClose && mem.level >= 2) {
+      if (hidden.length > 0 && willingToClose && mem.level >= 2 && v <= 2) {
         return { source: 'discard', placeIndex: hidden[0], flipIndex: null, reason: 'Cierra o avanza con carta baja' };
       }
     }
@@ -227,35 +359,49 @@ function decideAdaptivePlacement(board: Board, drawnValue: number, state: GameSt
     return { place: true, placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
   }
 
-  // Si al bot solo le queda 1 carta oculta y NO le conviene cerrar (va perdiendo y le duplicarían),
-  // prefiere sustituir una carta alta visible antes que descubrir su última oculta.
   if (canCloseNow && !willingToClose) {
-    const hi = highestVisibleIndex(board);
+    const hi = safeHighestVisibleIndex(board);
     if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) > drawnValue) {
       return { place: true, placeIndex: hi, flipIndex: null, reason: 'Evita cerrar todavía, baja puntos' };
     }
   }
 
+  const minGain = hidden.length > 0 ? (drawnValue <= 2 ? 2 : 3) : 1;
   const maxAcceptable = mem.level >= 3 ? 4 : 5;
+
   if (drawnValue <= maxAcceptable) {
-    const hi = highestVisibleIndex(board);
-    if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) > drawnValue) {
-      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Sustituye alta' };
+    const hi = safeHighestVisibleIndex(board);
+    const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
+    if (hi !== null && hiVal !== null && hiVal - drawnValue >= minGain) {
+      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Sustituye alta con buen margen' };
     }
-    if (hidden.length > 0 && willingToClose) {
-      return { place: true, placeIndex: hidden[0], flipIndex: null, reason: 'Coloca en oculta' };
+    if (hidden.length > 0 && willingToClose && (drawnValue <= 2 || (hiVal !== null && hiVal <= 4))) {
+      return { place: true, placeIndex: hidden[0], flipIndex: null, reason: 'Coloca carta baja en oculta' };
     }
-    if (hi !== null) {
+    if (hi !== null && hiVal !== null && hiVal > drawnValue && hidden.length === 0) {
       return { place: true, placeIndex: hi, flipIndex: null, reason: 'Sustituye visible' };
     }
   }
 
+  if (mem.level >= 2 && (hidden.length > 1 || willingToClose)) {
+    const pairIdx = findPairOpportunity(board, drawnValue, state);
+    if (pairIdx !== null && drawnValue <= 8) {
+      return { place: true, placeIndex: pairIdx, flipIndex: null, reason: 'Busca pareja para columna' };
+    }
+  }
+
   if (hidden.length > 0) {
+    if (canCloseNow && !willingToClose) {
+      const hi = highestVisibleIndex(board);
+      if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) > drawnValue) {
+        return { place: true, placeIndex: hi, flipIndex: null, reason: 'Retrasa cierre cambiando visible' };
+      }
+    }
+
     const twoSame = findColumnWithTwoSameVisible(board);
     if (twoSame && (hidden.length > 1 || willingToClose)) {
       return { place: false, placeIndex: null, flipIndex: twoSame.flipIdx, reason: 'Voltea columna prometedora' };
     }
-    // En niveles >= 2, voltea estratégicamente en columnas con cartas altas como en modo Difícil
     if (mem.level >= 2) {
       let bestFlip = hidden[0];
       let bestColHigh = -1;
@@ -275,7 +421,7 @@ function decideAdaptivePlacement(board: Board, drawnValue: number, state: GameSt
     return { place: false, placeIndex: null, flipIndex: pickRandom(hidden), reason: 'Descarta, voltea' };
   }
 
-  const hi = highestVisibleIndex(board);
+  const hi = safeHighestVisibleIndex(board);
   if (hi !== null) return { place: true, placeIndex: hi, flipIndex: null, reason: 'Forzado' };
   const rev = revealedIndices(board);
   return rev.length > 0 ? { place: true, placeIndex: rev[0], flipIndex: null, reason: 'Forzado' } : { place: false, placeIndex: null, flipIndex: null, reason: 'Sin acción' };
@@ -290,24 +436,24 @@ export function shouldCloseRound(
   const myHidden = hiddenIndices(bot.board).length;
   if (myHidden === 0) return true;
 
-  const estimatedTotal = myVisible + myHidden * 4.5;
+  const deckAvg = getRemainingDeckAverage(state);
+  const estimatedTotal = myVisible + myHidden * deckAvg;
+
+  const tolerance = mem ? mem.closeRiskTolerance : 0.3;
+  const safetyBuffer = tolerance < 0.35 ? 4 : tolerance < 0.6 ? 2.5 : 1.5;
 
   const opponents = state.players.filter(p => p.id !== bot.id);
-  let safe = true;
   for (const opp of opponents) {
     const oppVisible = getVisibleScore(opp.board);
     const oppHidden = hiddenIndices(opp.board).length;
-    const oppEstimate = oppVisible + oppHidden * 4.5;
-    if (estimatedTotal >= oppEstimate) {
-      safe = false;
-      break;
+    const oppEstimate = oppVisible + oppHidden * deckAvg;
+
+    if (estimatedTotal + safetyBuffer >= oppEstimate) {
+      return false;
     }
   }
 
-  const tolerance = mem ? mem.closeRiskTolerance : 0.5;
-  if (safe) return true;
-  if (myHidden <= 1 && Math.random() < tolerance) return true;
-  return false;
+  return true;
 }
 
 export function decideBotMove(
