@@ -78,7 +78,7 @@ function getProtectedIndices(board: Board): Set<number> {
     const cells = [col, col + 4, col + 8];
     if (cells.some(i => board[i].eliminated)) continue;
 
-    const revealed = cells.filter(i => board[i].revealed && board[i].card !== null);
+    const revealed = cells.filter(i => i.revealed && i.card !== null);
     if (revealed.length >= 2) {
       for (let a = 0; a < revealed.length; a++) {
         for (let b = a + 1; b < revealed.length; b++) {
@@ -114,7 +114,6 @@ function safeHighestVisibleIndex(board: Board): number | null {
 
 // Busca si la carta robada puede hacer pareja con una carta suelta en una columna con cartas ocultas
 function findPairOpportunity(board: Board, value: number, state: GameState): number | null {
-  // Solo merece la pena buscar pareja si el valor no es negativo (en negativos ya suman bien)
   if (value < 0) return null;
 
   const seenOnTable = state.discardCounts[value] || 0;
@@ -125,10 +124,9 @@ function findPairOpportunity(board: Board, value: number, state: GameState): num
     const cells = [col, col + 4, col + 8];
     if (cells.some(i => board[i].eliminated)) continue;
 
-    const revealed = cells.filter(i => board[i].revealed && board[i].card !== null);
-    const hidden = cells.filter(i => !board[i].revealed);
+    const revealed = cells.filter(i => i.revealed && i.card !== null);
+    const hidden = cells.filter(i => !i.revealed);
 
-    // Si hay exactamente 1 revelada igual a nuestra carta y al menos 1 oculta, ponemos la pareja en una oculta
     if (revealed.length === 1 && hidden.length >= 1 && board[revealed[0]].card!.value === value) {
       return hidden[0];
     }
@@ -161,12 +159,65 @@ function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// EASY: juega relajado pero sin hacer cambios absurdos de 1 punto
-function decideEasyMove(board: Board, topDiscard: Card | null): BotDecision {
+// Evalúa si al bot le renta cerrar o si corre riesgo de duplicar (x2) por tener más puntos que el rival
+export function shouldCloseRound(
+  bot: Player,
+  state: GameState,
+  mem: AdaptiveMemory | null,
+  knownClosingCardValue?: number
+): boolean {
+  const hidden = hiddenIndices(bot.board);
+  if (hidden.length === 0) return true;
+
+  const myVisible = getVisibleScore(bot.board);
+  const deckAvg = getRemainingDeckAverage(state);
+
+  // Si ya conocemos la carta con la que cerraría (p.ej. colocando en la última oculta), usamos su valor exacto;
+  // si va a voltear a ciegas, asumimos un colchón pesimista por si sale una carta media-alta (deckAvg + 2.5)
+  const myHiddenEstimate =
+    knownClosingCardValue !== undefined
+      ? knownClosingCardValue + (hidden.length - 1) * deckAvg
+      : hidden.length * (deckAvg + 2.5);
+
+  const myProjected = myVisible + myHiddenEstimate;
+
+  // Si cierra con 0 o menos puntos, duplicar es 0 o negativo (nunca le perjudica)
+  if (myProjected <= 0) return true;
+
+  const tolerance = mem ? mem.closeRiskTolerance : 0.25;
+  // Margen de seguridad: el rival aún tiene 1 turno extra tras el cierre para bajar ~3-4 puntos
+  const safetyBuffer = tolerance < 0.35 ? 6 : tolerance < 0.6 ? 4.5 : 3;
+
+  const opponents = state.players.filter(p => p.id !== bot.id);
+  for (const opp of opponents) {
+    const oppVisible = getVisibleScore(opp.board);
+    const oppHidden = hiddenIndices(opp.board).length;
+    // El rival tiene 1 turno extra para mejorar su tablero antes de contar
+    const oppLastTurnDiscount = oppHidden > 0 ? 3 : 1.5;
+    const oppEstimate = oppVisible + oppHidden * deckAvg - oppLastTurnDiscount;
+
+    // Si mis puntos proyectados + margen son mayores o iguales que los del rival, NO cerrar (riesgo de x2)
+    if (myProjected + safetyBuffer >= oppEstimate) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// EASY: juega relajado pero tampoco cierra a lo loco si va perdiendo claramente
+function decideEasyMove(board: Board, topDiscard: Card | null, state: GameState): BotDecision {
+  const bot = state.players[state.currentPlayerIndex];
+  const hidden = hiddenIndices(board);
+  const canCloseNow = hidden.length === 1;
+
   if (topDiscard) {
     const compIdx = findColumnCompletion(board, topDiscard.value);
-    if (compIdx !== null && Math.random() < 0.75) {
-      return { source: 'discard', placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
+    if (compIdx !== null) {
+      const closes = hidden.includes(compIdx) && canCloseNow;
+      if (!closes || !bot || shouldCloseRound(bot, state, null, 0)) {
+        return { source: 'discard', placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
+      }
     }
     if (topDiscard.value <= 3 && Math.random() < 0.45) {
       const hi = safeHighestVisibleIndex(board);
@@ -179,20 +230,34 @@ function decideEasyMove(board: Board, topDiscard: Card | null): BotDecision {
   return { source: 'deck', placeIndex: null, flipIndex: null, reason: 'Roba del mazo' };
 }
 
-function decideEasyPlacement(board: Board, drawnValue: number): BotPlacement {
+function decideEasyPlacement(board: Board, drawnValue: number, state: GameState): BotPlacement {
+  const bot = state.players[state.currentPlayerIndex];
+  const hidden = hiddenIndices(board);
+  const canCloseNow = hidden.length === 1;
+
   const compIdx = findColumnCompletion(board, drawnValue);
-  if (compIdx !== null && Math.random() < 0.8) {
-    return { place: true, placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
+  if (compIdx !== null) {
+    const closes = hidden.includes(compIdx) && canCloseNow;
+    if (!closes || !bot || shouldCloseRound(bot, state, null, 0)) {
+      return { place: true, placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
+    }
   }
+
+  // Si le queda 1 sola oculta y NO le renta cerrar, evita voltearla colocando sobre una visible
+  if (canCloseNow && bot && !shouldCloseRound(bot, state, null)) {
+    const hi = safeHighestVisibleIndex(board) ?? highestVisibleIndex(board);
+    if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) >= drawnValue) {
+      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Evita cerrar con riesgo de x2' };
+    }
+  }
+
   if (drawnValue <= 3) {
     const hi = safeHighestVisibleIndex(board);
     const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
-    // No cambia cartas ya buenas (<= 4) ni hace cambios de 1 punto
     if (hi !== null && hiVal !== null && hiVal >= 5 && hiVal - drawnValue >= 3) {
       return { place: true, placeIndex: hi, flipIndex: null, reason: 'Sustituye alta' };
     }
   }
-  const hidden = hiddenIndices(board);
   if (hidden.length > 0) {
     return { place: false, placeIndex: null, flipIndex: pickRandom(hidden), reason: 'Descarta, voltea' };
   }
@@ -202,43 +267,52 @@ function decideEasyPlacement(board: Board, drawnValue: number): BotPlacement {
   return rev.length > 0 ? { place: true, placeIndex: rev[0], flipIndex: null, reason: 'Forzado' } : { place: false, placeIndex: null, flipIndex: null, reason: 'Sin acción' };
 }
 
-// HARD: protege cartas <= 4, exige ganancia real (>= 4 pts) y prioriza columnas
+// HARD: protege cartas <= 4, exige ganancia real (>= 4 pts), prioriza columnas y evita cerrar si va a duplicar
 function decideHardMove(board: Board, topDiscard: Card | null, state: GameState, mem: AdaptiveMemory | null): BotDecision {
   const bot = state.players[state.currentPlayerIndex];
   const hidden = hiddenIndices(board);
   const canCloseNow = hidden.length === 1;
-  const willingToClose = !canCloseNow || !bot || shouldCloseRound(bot, state, mem);
 
   if (topDiscard) {
     const v = topDiscard.value;
-    // 1. Si el descarte completa una columna de 3 iguales, cogerlo siempre (salvo cierre suicida de columna de 0s)
+
+    // 1. Si el descarte completa una columna de 3 iguales:
+    // Si esa casilla era su última oculta, solo cierra si le renta (no duplica) o si elimina muchos puntos
     const compIdx = findColumnCompletion(board, v);
     if (compIdx !== null) {
-      const pointsSaved = v * 2;
-      if (!canCloseNow || willingToClose || pointsSaved >= 6) {
+      const closesRound = hidden.includes(compIdx) && canCloseNow;
+      if (!closesRound || !bot || shouldCloseRound(bot, state, mem, 0)) {
         return { source: 'discard', placeIndex: compIdx, flipIndex: null, reason: 'Completa columna con descarte' };
       }
     }
 
-    // 2. Si el descarte forma una pareja con una carta suelta (ej. otro 7 o 0) en columna con ocultas
-    if (hidden.length > 1 || willingToClose) {
-      const pairIdx = findPairOpportunity(board, v, state);
-      if (pairIdx !== null && v <= 5) {
+    // 2. Si el descarte forma una pareja con una carta suelta en columna con ocultas
+    const pairIdx = findPairOpportunity(board, v, state);
+    if (pairIdx !== null && v <= 5) {
+      const closesRound = hidden.includes(pairIdx) && canCloseNow;
+      if (!closesRound || !bot || shouldCloseRound(bot, state, mem, v)) {
         return { source: 'discard', placeIndex: pairIdx, flipIndex: null, reason: 'Forma pareja con descarte' };
       }
     }
 
-    // 3. Solo coger del descarte para bajar puntos si la carta es <= 2 y quita una carta de al menos 6 puntos (ganancia >= 4)
-    const threshold = mem ? Math.min(mem.stealThreshold, 2) : 2;
+    // 3. Coger del descarte para bajar una carta visible alta (NO cierra la ronda, ayuda a bajar puntos antes de cerrar)
+    const threshold = mem ? Math.min(mem.stealThreshold, 3) : 3;
     if (v <= threshold) {
       const hi = safeHighestVisibleIndex(board);
       const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
-      const minGain = hidden.length > 0 ? 4 : 1;
-      if (hi !== null && hiVal !== null && (hidden.length === 0 || hiVal >= 5) && hiVal - v >= minGain) {
-        return { source: 'discard', placeIndex: hi, flipIndex: null, reason: 'Coge descarte barato, quita alta' };
+      // Si está esperando para poder cerrar sin duplicar, acepta incluso bajar 2 puntos de una visible
+      const minGain = canCloseNow ? 2 : hidden.length > 0 ? 4 : 1;
+      if (hi !== null && hiVal !== null && (hidden.length === 0 || hiVal >= 5 || canCloseNow) && hiVal - v >= minGain) {
+        return { source: 'discard', placeIndex: hi, flipIndex: null, reason: 'Coge descarte barato, baja visible' };
       }
+
       const visVals = getVisibleValues(board);
-      if (visVals.every(val => val <= 3) && hidden.length > 0 && willingToClose && v <= 1) {
+      if (
+        visVals.every(val => val <= 3) &&
+        hidden.length > 0 &&
+        v <= 1 &&
+        (!canCloseNow || !bot || shouldCloseRound(bot, state, mem, v))
+      ) {
         return { source: 'discard', placeIndex: hidden[0], flipIndex: null, reason: 'Coge descarte, revela oculta' };
       }
     }
@@ -250,36 +324,51 @@ function decideHardPlacement(board: Board, drawnValue: number, state: GameState,
   const bot = state.players[state.currentPlayerIndex];
   const hidden = hiddenIndices(board);
   const canCloseNow = hidden.length === 1;
-  const willingToClose = !canCloseNow || !bot || shouldCloseRound(bot, state, mem);
+  const willingToCloseBlind = !canCloseNow || !bot || shouldCloseRound(bot, state, mem);
+  const willingToCloseWithCard = !canCloseNow || !bot || shouldCloseRound(bot, state, mem, drawnValue);
 
   // 1. Prioridad máxima: completar columna de 3 iguales
   const compIdx = findColumnCompletion(board, drawnValue);
   if (compIdx !== null) {
-    return { place: true, placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
-  }
-
-  // 2. Si estamos a 1 carta de cerrar pero aún no conviene cerrar, sustituir una visible alta sin voltear la última oculta
-  if (canCloseNow && !willingToClose) {
-    const hi = safeHighestVisibleIndex(board) ?? highestVisibleIndex(board);
-    if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) > drawnValue) {
-      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Evita cerrar todavía, baja puntos' };
+    const closesRound = hidden.includes(compIdx) && canCloseNow;
+    if (!closesRound || !bot || shouldCloseRound(bot, state, mem, 0)) {
+      return { place: true, placeIndex: compIdx, flipIndex: null, reason: 'Completa columna' };
     }
   }
 
-  // 3. Si es una carta negativa (-2 o -1), sí merece la pena cambiar incluso un 3 o 4
+  // 2. Si le queda 1 sola carta oculta y NO le renta cerrar (riesgo de duplicar x2):
+  // Debe evitar a toda costa descartar y voltear la última oculta.
+  // Para NO cerrar la ronda, sustituye una carta ya visible si mejora o empata (o si la robada es razonable <= 6).
+  if (canCloseNow && !willingToCloseBlind) {
+    // ¿Puede cerrar colocando esta carta concreta en la última oculta porque es muy baja (ej. -2, -1, 0)?
+    if (willingToCloseWithCard && drawnValue <= 1) {
+      return { place: true, placeIndex: hidden[0], flipIndex: null, reason: 'Cierra con carta muy baja segura' };
+    }
+
+    const hi = safeHighestVisibleIndex(board) ?? highestVisibleIndex(board);
+    const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
+    if (hi !== null && hiVal !== null && hiVal >= drawnValue) {
+      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Baja puntos sin cerrar (evita x2)' };
+    }
+    // Incluso si la robada es <= 5 y todas sus visibles son <= 4, prefiere cambiar una visible que cerrar y duplicar
+    if (hi !== null && hiVal !== null && drawnValue <= 5 && drawnValue - hiVal <= 2) {
+      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Retrasa cierre para no duplicar' };
+    }
+  }
+
+  // 3. Si es una carta negativa (-2 o -1), merece la pena cambiar incluso un 3 o 4
   if (drawnValue <= -1) {
     const hi = safeHighestVisibleIndex(board);
     const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
     if (hi !== null && hiVal !== null && hiVal >= 3) {
       return { place: true, placeIndex: hi, flipIndex: null, reason: 'Coloca negativa por carta media/alta' };
     }
-    if (hidden.length > 0 && willingToClose) {
+    if (hidden.length > 0 && willingToCloseWithCard) {
       return { place: true, placeIndex: hidden[0], flipIndex: null, reason: 'Coloca negativa en oculta' };
     }
   }
 
   // 4. Para cartas bajas (0, 1, 2, 3): NO tocar cartas que ya sean <= 4 (como cambiar un 4 por un 3)
-  // Solo sustituir cartas >= 5 con una ganancia mínima de 4 puntos (ej. cambiar un 7 por un 3, o un 6 por un 2)
   if (drawnValue <= 3) {
     const hi = safeHighestVisibleIndex(board);
     const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
@@ -289,41 +378,41 @@ function decideHardPlacement(board: Board, drawnValue: number, state: GameState,
       return { place: true, placeIndex: hi, flipIndex: null, reason: 'Sustituye alta visible con margen' };
     }
 
-    // Si tiene una pareja pendiente en una columna, priorizar descartar y voltear esa columna antes que gastar un 2 o 3 en una oculta al azar
     const twoSame = findColumnWithTwoSameVisible(board);
-    if (twoSame && drawnValue >= 1 && (hidden.length > 1 || willingToClose)) {
+    if (twoSame && drawnValue >= 1 && (hidden.length > 1 || willingToCloseBlind)) {
       return { place: false, placeIndex: null, flipIndex: twoSame.flipIdx, reason: 'Descarta para intentar cerrar columna' };
     }
 
-    if (hidden.length > 0 && willingToClose && drawnValue <= 1) {
+    if (hidden.length > 0 && willingToCloseWithCard && drawnValue <= 1) {
       return { place: true, placeIndex: hidden[0], flipIndex: null, reason: 'Coloca 0 o 1 en oculta' };
     }
   }
 
-  // 5. Formar pareja de columna (incluso con 0, 1, 2, 3, 4, 5, 6, 7) si hay ocultas en esa columna
-  if (hidden.length > 1 || willingToClose) {
-    const pairIdx = findPairOpportunity(board, drawnValue, state);
-    if (pairIdx !== null && drawnValue <= 7) {
+  // 5. Formar pareja de columna si hay ocultas
+  const pairIdx = findPairOpportunity(board, drawnValue, state);
+  if (pairIdx !== null && drawnValue <= 7) {
+    const closesRound = hidden.includes(pairIdx) && canCloseNow;
+    if (!closesRound || willingToCloseWithCard) {
       return { place: true, placeIndex: pairIdx, flipIndex: null, reason: 'Forma pareja para columna' };
     }
   }
 
   // 6. Descartar la robada y voltear una carta oculta estratégicamente
   if (hidden.length > 0) {
-    if (canCloseNow && !willingToClose) {
+    // Último freno anti-cierre suicida: si solo queda 1 oculta y no conviene cerrar, intenta cambiar cualquier visible antes que voltear
+    if (canCloseNow && !willingToCloseBlind) {
       const hi = safeHighestVisibleIndex(board) ?? highestVisibleIndex(board);
-      if (hi !== null && (visibleCardValueAt(board, hi) ?? 0) > drawnValue) {
-        return { place: true, placeIndex: hi, flipIndex: null, reason: 'Retrasa cierre cambiando visible' };
+      const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
+      if (hi !== null && hiVal !== null && drawnValue <= hiVal + 2) {
+        return { place: true, placeIndex: hi, flipIndex: null, reason: 'Evita voltear última carta con riesgo de x2' };
       }
     }
 
-    // Prioridad absoluta al voltear: destapar la 3ª carta de una columna que ya tiene pareja
     const twoSame = findColumnWithTwoSameVisible(board);
-    if (twoSame && (hidden.length > 1 || willingToClose)) {
+    if (twoSame && (hidden.length > 1 || willingToCloseBlind)) {
       return { place: false, placeIndex: null, flipIndex: twoSame.flipIdx, reason: 'Descarta, voltea columna con pareja' };
     }
 
-    // Si no hay pareja, voltear en la columna que tenga la carta visible más alta (por si sale igual o para saber qué cambiar)
     let bestFlip = hidden[0];
     let bestColHigh = -1;
     for (const h of hidden) {
@@ -347,42 +436,12 @@ function decideHardPlacement(board: Board, drawnValue: number, state: GameState,
   return rev.length > 0 ? { place: true, placeIndex: rev[0], flipIndex: null, reason: 'Forzado' } : { place: false, placeIndex: null, flipIndex: null, reason: 'Sin acción' };
 }
 
-// ADAPTIVE: usa la misma protección de cartas <= 4 y columnas, ajustando umbral y riesgo con memoria
 function decideAdaptiveMove(board: Board, topDiscard: Card | null, state: GameState, mem: AdaptiveMemory): BotDecision {
   return decideHardMove(board, topDiscard, state, mem);
 }
 
 function decideAdaptivePlacement(board: Board, drawnValue: number, state: GameState, mem: AdaptiveMemory): BotPlacement {
   return decideHardPlacement(board, drawnValue, state, mem);
-}
-
-export function shouldCloseRound(
-  bot: Player,
-  state: GameState,
-  mem: AdaptiveMemory | null
-): boolean {
-  const myVisible = getVisibleScore(bot.board);
-  const myHidden = hiddenIndices(bot.board).length;
-  if (myHidden === 0) return true;
-
-  const deckAvg = getRemainingDeckAverage(state);
-  const estimatedTotal = myVisible + myHidden * deckAvg;
-
-  const tolerance = mem ? mem.closeRiskTolerance : 0.3;
-  const safetyBuffer = tolerance < 0.35 ? 4 : tolerance < 0.6 ? 2.5 : 1.5;
-
-  const opponents = state.players.filter(p => p.id !== bot.id);
-  for (const opp of opponents) {
-    const oppVisible = getVisibleScore(opp.board);
-    const oppHidden = hiddenIndices(opp.board).length;
-    const oppEstimate = oppVisible + oppHidden * deckAvg;
-
-    if (estimatedTotal + safetyBuffer >= oppEstimate) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 export function decideBotMove(
@@ -392,7 +451,7 @@ export function decideBotMove(
   level: AILevel,
   mem: AdaptiveMemory | null
 ): BotDecision {
-  if (level === 'easy') return decideEasyMove(board, topDiscard);
+  if (level === 'easy') return decideEasyMove(board, topDiscard, state);
   if (level === 'hard') return decideHardMove(board, topDiscard, state, mem);
   return decideAdaptiveMove(board, topDiscard, state, mem!);
 }
@@ -404,7 +463,7 @@ export function decideBotPlacement(
   level: AILevel,
   mem: AdaptiveMemory | null
 ): BotPlacement {
-  if (level === 'easy') return decideEasyPlacement(board, drawnValue);
+  if (level === 'easy') return decideEasyPlacement(board, drawnValue, state);
   if (level === 'hard') return decideHardPlacement(board, drawnValue, state, mem);
   return decideAdaptivePlacement(board, drawnValue, state, mem!);
 }
