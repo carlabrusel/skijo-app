@@ -103,6 +103,6 @@ export interface AdaptiveMemory {
   gamesPlayed: number;
 }
 
-export const BOT_NAMES = ['Ana', 'Leo', 'Max'];
+export const BOT_NAMES = ['Antón', 'Sen', 'Levi'];
 export const BOT_IDS = ['bot_ana', 'bot_leo', 'bot_max'];
 export const PLAYER_ID = 'player';

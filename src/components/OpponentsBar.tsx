@@ -44,7 +44,7 @@ interface OpponentsBarProps {
 }
 
 export function OpponentsBar({ state }: OpponentsBarProps) {
-  const opponents = state.players.slice(1);
+  const opponents = state.players.filter(p => p.isBot);
   const currentId = state.players[state.currentPlayerIndex]?.id;
   const cardSize: 'opp' | 'opp-sm' = opponents.length > 1 ? 'opp-sm' : 'opp';
 
