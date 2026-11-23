@@ -74,6 +74,9 @@ export default function App() {
     return false;
   };
 
+  const playerHighlightIndex =
+    state.pendingHighlight?.player === localPlayerId ? state.pendingHighlight.index : null;
+
   const deckEmpty = state.deck.length === 0;
   const discardTop = state.discard[0] ?? null;
   const centerCardClass = 'h-[8.5dvh] max-h-16 aspect-[2/3]';
@@ -91,7 +94,7 @@ export default function App() {
 
   return (
     <div
-      className="h-dvh max-w-md mx-auto flex flex-col justify-between overflow-hidden text-white px-2 pt-1 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"
+      className="h-dvh max-w-md mx-auto flex flex-col justify-between overflow-hidden text-white px-2 pt-[calc(0.35rem+env(safe-area-inset-top))] pb-[calc(1.75rem+env(safe-area-inset-bottom))]"
       style={{
         background: 'radial-gradient(ellipse at center top, #1e3a5f 0%, #0f1e30 40%, #0a1620 100%)',
       }}
@@ -216,6 +219,7 @@ export default function App() {
             onCellClick={onPlayerCellClick}
             clickablePredicate={playerCellClickable}
             highlightPredicate={playerHighlight}
+            highlightIndex={playerHighlightIndex}
             activeTurn={isPlayerTurn}
           />
         </div>
@@ -232,6 +236,7 @@ export default function App() {
       {game.gameWinner && game.roundResult && (
         <GameOverModal
           result={game.roundResult}
+          localPlayerId={localPlayerId}
           onPlayAgain={game.playAgain}
           onReset={game.resetGame}
         />
