@@ -12,7 +12,6 @@ import {
 } from '@/game/board';
 import { decideBotMove, decideBotPlacement } from '@/game/bot';
 import { loadMemory, resetMemory, evolveMemory } from '@/game/memory';
-import { OnlineRoomRow, getRoom, updateRoomState } from '@/lib/supabase';
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -28,30 +27,6 @@ function buildPlayers(config: GameConfig): Player[] {
       board: emptyBoard(),
       score: 0,
     });
-  }
-  return players;
-}
-
-function buildOnlinePlayers(room: OnlineRoomRow, fillWithBots: boolean): Player[] {
-  const players: Player[] = room.players.map(p => ({
-    id: p.id,
-    name: p.name,
-    isBot: false,
-    board: emptyBoard(),
-    score: 0,
-  }));
-  if (fillWithBots) {
-    let botIdx = 0;
-    while (players.length < 4 && botIdx < BOT_NAMES.length) {
-      players.push({
-        id: BOT_IDS[botIdx],
-        name: `Bot ${BOT_NAMES[botIdx]}`,
-        isBot: true,
-        board: emptyBoard(),
-        score: 0,
-      });
-      botIdx++;
-    }
   }
   return players;
 }
@@ -88,8 +63,8 @@ function dealNewRound(state: GameState): GameState {
   };
 }
 
-function freshState(config: GameConfig, customPlayers?: Player[]): GameState {
-  const players = customPlayers ?? buildPlayers(config);
+function freshState(config: GameConfig): GameState {
+  const players = buildPlayers(config);
   return {
     config,
     players,
@@ -117,31 +92,6 @@ function updateDiscardCounts(counts: Record<number, number>, card: Card): Record
   return { ...counts, [card.value]: (counts[card.value] || 0) + 1 };
 }
 
-function buildRoundResultFromState(s: GameState): RoundResult {
-  const closerId = s.lastRoundCloser || s.players[0].id;
-  const results: RoundPlayerResult[] = s.players.map(p => ({
-    id: p.id,
-    name: p.name,
-    isBot: p.isBot,
-    roundScore: getFullScore(p.board),
-    finalScore: p.score,
-    doubled: false,
-    eliminated: countEliminated(p.board),
-    closed: p.id === closerId,
-  }));
-  const sortedResults = [...results].sort((a, b) => a.finalScore - b.finalScore);
-  const someoneOver100 = s.players.some(p => p.score >= 100);
-  const winner = someoneOver100
-    ? s.players.reduce((min, p) => (p.score < min.score ? p : min)).id
-    : null;
-  return {
-    players: sortedResults,
-    closer: closerId,
-    isFinal: someoneOver100,
-    winner,
-  };
-}
-
 export function useSkyjo() {
   const [state, setState] = useState<GameState | null>(null);
   const [roundResult, setRoundResult] = useState<RoundResult | null>(null);
@@ -149,101 +99,22 @@ export function useSkyjo() {
   const [setupOpen, setSetupOpen] = useState(true);
   const [gameWinner, setGameWinner] = useState<string | null>(null);
   const [memory, setMemory] = useState<AdaptiveMemory>(() => loadMemory());
-
-  // Estado online
-  const [onlineRoomCode, setOnlineRoomCode] = useState<string | null>(null);
-  const [onlineHostId, setOnlineHostId] = useState<string | null>(null);
-  const [localPlayerId, setLocalPlayerId] = useState<string>(PLAYER_ID);
-
   const busyRef = useRef(false);
   const roundTurnsRef = useRef(0);
   const pendingFinishRef = useRef<{ result: RoundResult } | null>(null);
-  const lastSyncedSnapshotRef = useRef<string>('');
-
-  const pushOnlineState = useCallback(
-    async (nextState: GameState, codeOverride?: string) => {
-      const code = codeOverride ?? onlineRoomCode;
-      if (!code) return;
-      const serialized = JSON.stringify(nextState);
-      lastSyncedSnapshotRef.current = serialized;
-      await updateRoomState(code, { status: 'playing', game_state: nextState });
-    },
-    [onlineRoomCode]
-  );
-
-  // Sincronización periódica con Supabase en partidas online
-  useEffect(() => {
-    if (!onlineRoomCode || setupOpen) return;
-    const interval = setInterval(async () => {
-      const room = await getRoom(onlineRoomCode);
-      if (!room || !room.game_state) return;
-      const remote = room.game_state as GameState;
-      const serialized = JSON.stringify(remote);
-      if (serialized !== lastSyncedSnapshotRef.current) {
-        lastSyncedSnapshotRef.current = serialized;
-        setState(remote);
-        if (remote.phase === 'end_routine') {
-          const res = buildRoundResultFromState(remote);
-          setRoundResult(res);
-          if (res.winner) setGameWinner(res.winner);
-        } else {
-          setRoundResult(null);
-          setGameWinner(null);
-        }
-      }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [onlineRoomCode, setupOpen]);
 
   const startGame = useCallback((config: GameConfig) => {
     roundTurnsRef.current = 0;
     pendingFinishRef.current = null;
-    setOnlineRoomCode(null);
-    setOnlineHostId(null);
-    setLocalPlayerId(PLAYER_ID);
     setRoundResult(null);
     setGameWinner(null);
     setSetupOpen(false);
     setState(() => dealNewRound(freshState(config)));
   }, []);
 
-  const startOnlineGame = useCallback(
-    async (room: OnlineRoomRow, myId: string, fillWithBots: boolean) => {
-      roundTurnsRef.current = 0;
-      pendingFinishRef.current = null;
-      const players = buildOnlinePlayers(room, fillWithBots);
-      const initial = dealNewRound(
-        freshState({ playerCount: players.length, aiLevel: 'hard' }, players)
-      );
-      setOnlineRoomCode(room.code);
-      setOnlineHostId(room.host_id);
-      setLocalPlayerId(myId);
-      setRoundResult(null);
-      setGameWinner(null);
-      setSetupOpen(false);
-      setState(initial);
-      await pushOnlineState(initial, room.code);
-    },
-    [pushOnlineState]
-  );
-
-  const joinStartedOnlineGame = useCallback((room: OnlineRoomRow, myId: string) => {
-    if (!room.game_state) return;
-    const remote = room.game_state as GameState;
-    lastSyncedSnapshotRef.current = JSON.stringify(remote);
-    setOnlineRoomCode(room.code);
-    setOnlineHostId(room.host_id);
-    setLocalPlayerId(myId);
-    setSetupOpen(false);
-    setState(remote);
-  }, []);
-
   const resetGame = useCallback(() => {
     roundTurnsRef.current = 0;
     pendingFinishRef.current = null;
-    setOnlineRoomCode(null);
-    setOnlineHostId(null);
-    setLocalPlayerId(PLAYER_ID);
     setRoundResult(null);
     setGameWinner(null);
     setSetupOpen(true);
@@ -258,26 +129,29 @@ export function useSkyjo() {
     setSetupOpen(false);
     setState(s => {
       if (!s) return dealNewRound(freshState({ playerCount: 2, aiLevel: 'hard' }));
-      const resetPlayers = s.players.map(p => ({ ...p, score: 0, board: emptyBoard() }));
-      const next = dealNewRound(freshState(s.config, resetPlayers));
-      if (onlineRoomCode) pushOnlineState(next);
-      return next;
+      return dealNewRound(freshState(s.config));
     });
-  }, [onlineRoomCode, pushOnlineState]);
+  }, []);
 
   const resetAdaptiveMemory = useCallback(() => {
     const m = resetMemory();
     setMemory(m);
   }, []);
 
-  const triggerDiscardPulse = useCallback(() => {}, []);
+  const triggerDiscardPulse = useCallback(() => {
+    // La animación del descarte se dispara limpiamente en App.tsx
+  }, []);
 
+  // Espera 3 segundos con todas las cartas volteadas en la mesa antes de mostrar el modal de resultados
   useEffect(() => {
     if (state?.phase === 'end_routine' && pendingFinishRef.current) {
       const { result } = pendingFinishRef.current;
-      pendingFinishRef.current = null;
-      setRoundResult(result);
-      if (result.winner) setGameWinner(result.winner);
+      const timer = setTimeout(() => {
+        pendingFinishRef.current = null;
+        setRoundResult(result);
+        if (result.winner) setGameWinner(result.winner);
+      }, 3000);
+      return () => clearTimeout(timer);
     }
   }, [state?.phase]);
 
@@ -298,12 +172,15 @@ export function useSkyjo() {
       let discardCounts = s.discardCounts;
       let changed = true;
       let elimCount = 0;
+      let lastElimIndex: number | null = null;
+
       while (changed) {
         const cols = findEliminableColumns(board);
         if (cols.length === 0) {
           changed = false;
           break;
         }
+        lastElimIndex = cols[0];
         const { board: nb, eliminatedCards } = eliminateColumns(board, cols);
         board = nb;
         elimCount += eliminatedCards.length;
@@ -313,6 +190,7 @@ export function useSkyjo() {
           discardCounts = updateDiscardCounts(discardCounts, c.card!);
         }
       }
+
       if (elimCount > 0) {
         const players = s.players.map(p => (p.id === playerId ? { ...p, board } : p));
         return {
@@ -320,7 +198,11 @@ export function useSkyjo() {
           players,
           discard,
           discardCounts,
-          lastAction: `¡Columna(s) eliminada(s) de ${player.name}!`,
+          pendingHighlight:
+            lastElimIndex !== null
+              ? { player: playerId, index: lastElimIndex, action: 'place' }
+              : s.pendingHighlight,
+          lastAction: `✨ ¡Columna eliminada de ${player.name}! ✨`,
         };
       }
       return s;
@@ -386,21 +268,21 @@ export function useSkyjo() {
         winner,
       };
 
-      if (!onlineRoomCode && s.config.aiLevel === 'adaptive') {
-        const playerElim = countEliminated(playersRevealed.find(p => p.id === localPlayerId)!.board);
-        const playerRes = results.find(r => r.id === localPlayerId)!;
+      if (s.config.aiLevel === 'adaptive') {
+        const playerElim = countEliminated(playersRevealed.find(p => p.id === PLAYER_ID)!.board);
+        const playerRes = results.find(r => r.id === PLAYER_ID)!;
         const closerRes = results.find(r => r.id === closerId)!;
         const lowestRoundScore = Math.min(...results.map(r => r.roundScore));
 
         const newMem = evolveMemory(memory, {
-          playerClosed: closerId === localPlayerId,
+          playerClosed: closerId === PLAYER_ID,
           playerDoubled: playerRes.doubled,
-          botClosedAndDoubled: closerId !== localPlayerId && closerRes.doubled,
+          botClosedAndDoubled: closerId !== PLAYER_ID && closerRes.doubled,
           turnsInRound: Math.max(1, Math.floor(roundTurnsRef.current / s.players.length)),
           playerEliminatedColumns: Math.floor(playerElim / 3),
           playerWonRound: playerRes.roundScore === lowestRoundScore,
           isGameOver: someoneOver100,
-          playerWonGame: winner === localPlayerId,
+          playerWonGame: winner === PLAYER_ID,
         });
         setMemory(newMem);
       }
@@ -412,15 +294,15 @@ export function useSkyjo() {
         players: updatedPlayers,
         phase: 'end_routine',
         stage: 'choose_source',
-        lastRoundCloser: closerId,
         pendingDraw: null,
         pendingHighlight: null,
-        lastAction: 'Ronda terminada',
+        lastAction: '¡Ronda terminada! Revelando cartas...',
       };
     },
-    [memory, onlineRoomCode, localPlayerId]
+    [memory]
   );
 
+  // ---- Gestión unificada de avance de turno y cierre de ronda ----
   const advanceToNextPlayer = useCallback((s: GameState): GameState => {
     const curIdx = s.currentPlayerIndex;
     let nextIdx = (curIdx + 1) % s.turnOrder.length;
@@ -434,10 +316,12 @@ export function useSkyjo() {
       currentPlayerIndex: nextIdx,
       stage: nextPlayer.isBot ? 'bot_thinking' : 'choose_source',
       lastAction: isLastTurn
-        ? `${nextPlayer.name} juega su último turno...`
+        ? nextPlayer.isBot
+          ? `${nextPlayer.name} juega su último turno...`
+          : '¡Última ronda! Juega tu último turno.'
         : nextPlayer.isBot
           ? `${nextPlayer.name} está pensando...`
-          : `Turno de ${nextPlayer.name}`,
+          : 'Tu turno: roba del mazo o coge del descarte',
       pendingDraw: null,
     };
   }, []);
@@ -455,7 +339,10 @@ export function useSkyjo() {
           lastRoundCloser: actorId,
           lastRoundRemaining: s.turnOrder.filter(id => id !== actorId),
           remainingFinalTurns: remaining,
-          lastAction: `¡Última ronda! ${actor.name} cerró.`,
+          lastAction:
+            actorId === PLAYER_ID
+              ? '¡Última ronda! Cerraste.'
+              : `¡Última ronda! ${actor.name} cerró.`,
         };
         if (remaining <= 0) {
           return endRound(triggeredState, actorId);
@@ -482,120 +369,105 @@ export function useSkyjo() {
   );
 
   // ---- Player initial reveal ----
-  const revealInitialCard = useCallback(
-    (index: number) => {
-      setState(prev => {
-        if (!prev || prev.phase !== 'reveal_initial') return prev;
-        const pid = localPlayerId;
-        if ((prev.initialRevealed[pid] ?? 0) >= 2) return prev;
-        const cell = prev.players.find(p => p.id === pid)?.board[index];
-        if (!cell || cell.revealed) return prev;
-
-        const players = prev.players.map(p => {
-          if (p.id !== pid) return p;
-          const board = p.board.map((c, i) => (i === index ? { ...c, revealed: true } : c));
-          return { ...p, board };
-        });
-        const count = (prev.initialRevealed[pid] ?? 0) + 1;
-        const updatedInitial = { ...prev.initialRevealed, [pid]: count };
-
-        let next: GameState = {
-          ...prev,
-          players,
-          initialRevealed: updatedInitial,
-          lastAction: count < 2 ? `Voltea 1 carta más (${count}/2)` : 'Esperando al resto de jugadores...',
-        };
-
-        const humanPlayers = players.filter(p => !p.isBot);
-        const allHumansReady = humanPlayers.every(p => (updatedInitial[p.id] ?? 0) >= 2);
-
-        if (allHumansReady) {
-          let botPlayers = players;
-          for (const p of botPlayers) {
-            if (!p.isBot) continue;
-            const botHidden = hiddenIndices(p.board);
-            const picks = shuffle([...botHidden]).slice(0, 2);
-            botPlayers = botPlayers.map(bp => {
-              if (bp.id !== p.id) return bp;
-              const board = bp.board.map((c, i) => (picks.includes(i) ? { ...c, revealed: true } : c));
-              return { ...bp, board };
-            });
-          }
-
-          let bestId = '';
-          let bestSum = -Infinity;
-          for (const p of botPlayers) {
-            const revealedVals = p.board.filter(c => c.revealed && c.card).map(c => c.card!.value);
-            const sum = revealedVals.reduce((a, b) => a + b, 0);
-            if (sum > bestSum) {
-              bestSum = sum;
-              bestId = p.id;
-            }
-          }
-          const startIdx = botPlayers.findIndex(p => p.id === bestId);
-          const starter = botPlayers[startIdx];
-          next = {
-            ...next,
-            players: botPlayers,
-            currentPlayerIndex: startIdx,
-            phase: 'playing',
-            stage: starter.isBot ? 'bot_thinking' : 'choose_source',
-            lastAction: `¡Empieza ${starter.name}!`,
-          };
-        }
-
-        if (onlineRoomCode) pushOnlineState(next);
-        return next;
+  const revealInitialCard = useCallback((index: number) => {
+    setState(prev => {
+      if (!prev || prev.phase !== 'reveal_initial') return prev;
+      const pid = PLAYER_ID;
+      if (prev.initialRevealed[pid] >= 2) return prev;
+      const players = prev.players.map(p => {
+        if (p.id !== pid) return p;
+        const board = p.board.map((c, i) => (i === index ? { ...c, revealed: true } : c));
+        return { ...p, board };
       });
-    },
-    [localPlayerId, onlineRoomCode, pushOnlineState]
-  );
+      const count = prev.initialRevealed[pid] + 1;
+      let next = {
+        ...prev,
+        players,
+        initialRevealed: { ...prev.initialRevealed, [pid]: count },
+        lastAction: count < 2 ? `Voltea 1 carta más (${count}/2)` : 'Preparando...',
+      };
+
+      if (count >= 2) {
+        let botPlayers = players;
+        for (const p of botPlayers) {
+          if (!p.isBot) continue;
+          const botHidden = hiddenIndices(p.board);
+          const picks = shuffle([...botHidden]).slice(0, 2);
+          botPlayers = botPlayers.map(bp => {
+            if (bp.id !== p.id) return bp;
+            const board = bp.board.map((c, i) => (picks.includes(i) ? { ...c, revealed: true } : c));
+            return { ...bp, board };
+          });
+        }
+        next = { ...next, players: botPlayers };
+
+        let bestId = '';
+        let bestSum = -Infinity;
+        for (const p of botPlayers) {
+          const revealedVals = p.board.filter(c => c.revealed && c.card).map(c => c.card!.value);
+          const sum = revealedVals.reduce((a, b) => a + b, 0);
+          if (sum > bestSum) {
+            bestSum = sum;
+            bestId = p.id;
+          }
+        }
+        const startIdx = botPlayers.findIndex(p => p.id === bestId);
+        const starter = botPlayers[startIdx];
+        next = {
+          ...next,
+          currentPlayerIndex: startIdx,
+          phase: 'playing',
+          stage: starter.isBot ? 'bot_thinking' : 'choose_source',
+          lastAction: starter.isBot
+            ? `${starter.name} empieza...`
+            : '¡Empiezas tú! Roba del mazo o coge del descarte',
+        };
+      }
+      return next;
+    });
+  }, []);
 
   // ---- Player source choice ----
   const playerTakeDiscard = useCallback(() => {
     setState(prev => {
       if (!prev || prev.phase !== 'playing') return prev;
-      if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
+      if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
       if (prev.stage !== 'choose_source') return prev;
       if (prev.discard.length === 0) return prev;
       const top = prev.discard[0];
-      const next: GameState = {
+      return {
         ...prev,
         pendingDraw: { card: top, source: 'from_descarte' },
         stage: 'must_place',
         discard: prev.discard.slice(1),
-        lastAction: `${prev.players[prev.currentPlayerIndex].name} cogió del descarte`,
+        lastAction: 'Elegiste el descarte. Pulsa una carta de tu tablero para intercambiarla.',
       };
-      if (onlineRoomCode) pushOnlineState(next);
-      return next;
     });
-  }, [localPlayerId, onlineRoomCode, pushOnlineState]);
+  }, []);
 
   const playerDrawDeck = useCallback(() => {
     setState(prev => {
       if (!prev || prev.phase !== 'playing') return prev;
-      if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
+      if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
       if (prev.stage !== 'choose_source') return prev;
       const s = ensureDeck(prev);
       if (s.deck.length === 0) return prev;
       const drawn = s.deck[0];
-      const next: GameState = {
+      return {
         ...s,
         deck: s.deck.slice(1),
         pendingDraw: { card: drawn, source: 'from_mazo' },
         stage: 'must_place',
-        lastAction: `${prev.players[prev.currentPlayerIndex].name} robó del mazo`,
+        lastAction: 'Robaste del mazo. Coloca en tu tablero o descarta.',
       };
-      if (onlineRoomCode) pushOnlineState(next);
-      return next;
     });
-  }, [ensureDeck, localPlayerId, onlineRoomCode, pushOnlineState]);
+  }, [ensureDeck]);
 
   const playerPlaceCard = useCallback(
     (index: number) => {
       setState(prev => {
         if (!prev || prev.phase !== 'playing') return prev;
-        if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
+        if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
         if (prev.stage !== 'must_place' || !prev.pendingDraw) return prev;
         const drawn = prev.pendingDraw.card;
         const player = prev.players[prev.currentPlayerIndex];
@@ -617,44 +489,39 @@ export function useSkyjo() {
           pendingDraw: null,
           pendingHighlight: { player: player.id, index, action: 'place' },
           stage: 'choose_source',
-          lastAction: `${player.name} colocó carta`,
+          lastAction: 'Carta colocada',
         };
         s = checkColumnEliminations(s, player.id);
-        const next = completeTurn(s, player.id);
-        if (onlineRoomCode) pushOnlineState(next);
-        return next;
+        return completeTurn(s, player.id);
       });
       triggerDiscardPulse();
     },
-    [checkColumnEliminations, completeTurn, triggerDiscardPulse, localPlayerId, onlineRoomCode, pushOnlineState]
+    [checkColumnEliminations, completeTurn, triggerDiscardPulse]
   );
 
   const playerDiscardDrawn = useCallback(() => {
     setState(prev => {
       if (!prev || prev.phase !== 'playing') return prev;
-      if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
+      if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
       if (prev.stage !== 'must_place' || !prev.pendingDraw) return prev;
       const drawn = prev.pendingDraw.card;
-      const player = prev.players[prev.currentPlayerIndex];
-      const next: GameState = {
+      return {
         ...prev,
         discard: [drawn, ...prev.discard],
         discardCounts: updateDiscardCounts(prev.discardCounts, drawn),
         pendingDraw: null,
         stage: 'discard_then_flip',
-        lastAction: `${player.name} descartó y va a voltear una oculta`,
+        lastAction: 'Carta descartada. Pulsa una carta boca abajo para voltearla.',
       };
-      if (onlineRoomCode) pushOnlineState(next);
-      return next;
     });
     triggerDiscardPulse();
-  }, [triggerDiscardPulse, localPlayerId, onlineRoomCode, pushOnlineState]);
+  }, [triggerDiscardPulse]);
 
   const playerFlipHidden = useCallback(
     (index: number) => {
       setState(prev => {
         if (!prev || prev.phase !== 'playing') return prev;
-        if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
+        if (prev.players[prev.currentPlayerIndex].id !== PLAYER_ID) return prev;
         if (prev.stage !== 'discard_then_flip') return prev;
         const player = prev.players[prev.currentPlayerIndex];
         const cell = player.board[index];
@@ -665,15 +532,13 @@ export function useSkyjo() {
           players: prev.players.map(p => (p.id === player.id ? { ...p, board } : p)),
           pendingHighlight: { player: player.id, index, action: 'flip' },
           stage: 'choose_source',
-          lastAction: `${player.name} volteó una carta`,
+          lastAction: 'Carta volteada',
         };
         s = checkColumnEliminations(s, player.id);
-        const next = completeTurn(s, player.id);
-        if (onlineRoomCode) pushOnlineState(next);
-        return next;
+        return completeTurn(s, player.id);
       });
     },
-    [checkColumnEliminations, completeTurn, localPlayerId, onlineRoomCode, pushOnlineState]
+    [checkColumnEliminations, completeTurn]
   );
 
   const nextRound = useCallback(() => {
@@ -682,13 +547,11 @@ export function useSkyjo() {
     setRoundResult(null);
     setState(prev => {
       if (!prev) return prev;
-      const next = dealNewRound({ ...prev, roundNumber: prev.roundNumber + 1 });
-      if (onlineRoomCode) pushOnlineState(next);
-      return next;
+      return dealNewRound({ ...prev, roundNumber: prev.roundNumber + 1 });
     });
-  }, [onlineRoomCode, pushOnlineState]);
+  }, []);
 
-  // ---- Bot turn runner (solo ejecuta el anfitrión en modo online para no duplicar turnos) ----
+  // ---- Bot turn runner ----
   const runBotTurn = useCallback(
     async (cur: GameState) => {
       let s = cur;
@@ -737,9 +600,16 @@ export function useSkyjo() {
           pendingHighlight: { player: bot.id, index: placeIdx, action: 'place' },
           lastAction: `${bot.name} intercambia carta`,
         };
-        s = checkColumnEliminations(s, bot.id);
         setState(s);
-        await sleep(pauseMs * 0.6);
+        if (oldCard) triggerDiscardPulse();
+
+        await sleep(pauseMs * 0.65);
+        const beforeElim = s.lastAction;
+        s = checkColumnEliminations(s, bot.id);
+        if (s.lastAction !== beforeElim) {
+          setState(s);
+          await sleep(750);
+        }
       } else {
         s = ensureDeck(s);
         if (s.deck.length === 0) {
@@ -796,9 +666,16 @@ export function useSkyjo() {
               pendingHighlight: { player: bot.id, index: idx, action: 'place' },
               lastAction: `${bot.name} intercambia`,
             };
-            s = checkColumnEliminations(s, bot.id);
             setState(s);
-            await sleep(pauseMs * 0.5);
+            if (oldCard) triggerDiscardPulse();
+
+            await sleep(pauseMs * 0.65);
+            const beforeElim = s.lastAction;
+            s = checkColumnEliminations(s, bot.id);
+            if (s.lastAction !== beforeElim) {
+              setState(s);
+              await sleep(750);
+            }
           } else {
             const newDiscard = [drawn, ...s.discard];
             const discardCounts = updateDiscardCounts(s.discardCounts, drawn);
@@ -826,9 +703,16 @@ export function useSkyjo() {
                   : null,
               lastAction: `${bot.name} descarta y voltea`,
             };
-            s = checkColumnEliminations(s, bot.id);
             setState(s);
-            await sleep(pauseMs * 0.5);
+            triggerDiscardPulse();
+
+            await sleep(pauseMs * 0.65);
+            const beforeElim = s.lastAction;
+            s = checkColumnEliminations(s, bot.id);
+            if (s.lastAction !== beforeElim) {
+              setState(s);
+              await sleep(750);
+            }
           }
         }
       }
@@ -837,15 +721,13 @@ export function useSkyjo() {
       const cleanState: GameState = { ...s, pendingHighlight: null };
       const nextState = completeTurn(cleanState, bot.id);
       setState(nextState);
-      if (onlineRoomCode) pushOnlineState(nextState);
     },
-    [memory, checkColumnEliminations, ensureDeck, completeTurn, onlineRoomCode, pushOnlineState]
+    [memory, checkColumnEliminations, ensureDeck, completeTurn, triggerDiscardPulse]
   );
 
   useEffect(() => {
     if (!state) return;
     if (state.phase === 'playing' && state.stage === 'bot_thinking' && !busyRef.current) {
-      if (onlineRoomCode && onlineHostId && localPlayerId !== onlineHostId) return;
       const current = state.players[state.currentPlayerIndex];
       if (current && current.isBot) {
         busyRef.current = true;
@@ -854,7 +736,7 @@ export function useSkyjo() {
         });
       }
     }
-  }, [state, runBotTurn, onlineRoomCode, onlineHostId, localPlayerId]);
+  }, [state, runBotTurn]);
 
   return {
     state,
@@ -863,13 +745,9 @@ export function useSkyjo() {
     setupOpen,
     gameWinner,
     memory,
-    localPlayerId,
-    onlineRoomCode,
     setRulesOpen,
     setSetupOpen,
     startGame,
-    startOnlineGame,
-    joinStartedOnlineGame,
     resetGame,
     playAgain,
     resetAdaptiveMemory,

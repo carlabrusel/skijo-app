@@ -59,23 +59,28 @@ export function RoundModal({
         </p>
 
         <div className="bg-slate-800/50 rounded-xl border border-slate-700 overflow-hidden">
-          <div className="grid grid-cols-[1fr_auto_auto] gap-2 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-500 font-semibold border-b border-slate-700">
+          <div className="grid grid-cols-[1fr_3.5rem_3.5rem] gap-2 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-500 font-semibold border-b border-slate-700">
             <span>Jugador</span>
             <span className="text-right">Ronda</span>
             <span className="text-right">Total</span>
           </div>
           {result.players.map((p, i) => (
-            <div key={p.id} className={`grid grid-cols-[1fr_auto_auto] gap-2 px-3 py-2.5 items-center ${i % 2 === 0 ? 'bg-slate-800/30' : ''} ${p.closed ? 'ring-1 ring-amber-500/30 bg-amber-900/10' : ''}`}>
+            <div
+              key={p.id}
+              className={`grid grid-cols-[1fr_3.5rem_3.5rem] gap-2 px-3 py-2.5 items-center ${
+                i % 2 === 0 ? 'bg-slate-800/30' : ''
+              } ${p.closed ? 'ring-1 ring-amber-500/30 bg-amber-900/10' : ''}`}
+            >
               <div className="flex items-center gap-1.5 min-w-0">
                 <span className={`text-xs font-bold ${i === 0 ? 'text-emerald-400' : 'text-slate-300'}`}>{i + 1}.</span>
                 <span className="text-sm font-medium text-white truncate">{p.name}</span>
-                {p.closed && <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-semibold">cerró</span>}
-                {p.doubled && <span className="text-[9px] bg-rose-500/20 text-rose-300 px-1.5 py-0.5 rounded font-semibold">x2</span>}
+                {p.closed && <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-semibold shrink-0">cerró</span>}
+                {p.doubled && <span className="text-[9px] bg-rose-500/20 text-rose-300 px-1.5 py-0.5 rounded font-semibold shrink-0">x2</span>}
               </div>
-              <span className={`text-sm font-bold text-right ${p.roundScore > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+              <span className={`text-sm font-bold text-right tabular-nums ${p.roundScore > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
                 {p.roundScore > 0 ? '+' : ''}{p.roundScore}
               </span>
-              <span className="text-sm font-bold text-right text-white">{p.finalScore}</span>
+              <span className="text-sm font-bold text-right tabular-nums text-white">{p.finalScore}</span>
             </div>
           ))}
         </div>
@@ -195,7 +200,7 @@ export function GameOverModal({
                   {i === 0 && <Trophy size={14} className="text-amber-400" />}
                   <span className="text-sm font-medium text-white">{i + 1}. {p.name}</span>
                 </div>
-                <span className={`text-lg font-bold ${i === 0 ? 'text-emerald-400' : 'text-slate-300'}`}>{p.finalScore}</span>
+                <span className={`text-lg font-bold tabular-nums ${i === 0 ? 'text-emerald-400' : 'text-slate-300'}`}>{p.finalScore}</span>
               </div>
             ))}
           </div>
