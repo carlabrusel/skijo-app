@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   Users, Brain, Zap, RotateCcw, Sparkles, Target, Globe,
-  Copy, Check, Play, LogIn, Plus, Bot, Loader2, ArrowLeft,
+  Copy, Check, Play, LogIn, Plus, Bot, Loader2, ArrowLeft, Share2,
 } from 'lucide-react';
 import { AILevel, AdaptiveMemory } from '@/game/types';
 import {
@@ -10,6 +10,7 @@ import {
   getRoom,
   joinRoom,
   getOrCreateClientId,
+  cleanRoomCode,
 } from '@/lib/supabase';
 
 interface SetupModalProps {
@@ -19,6 +20,20 @@ interface SetupModalProps {
   onJoinStartedOnline: (room: OnlineRoomRow, myPlayerId: string) => void;
   memory: AdaptiveMemory;
   onResetMemory: () => void;
+}
+
+function extractRoomCodeFromUrl(): string {
+  const searchParams = new URLSearchParams(window.location.search);
+  const fromSearch = searchParams.get('sala') || searchParams.get('room');
+  if (fromSearch) return cleanRoomCode(fromSearch);
+
+  if (window.location.hash.includes('sala=')) {
+    const hashQuery = window.location.hash.split('?')[1] || window.location.hash.replace(/^#/, '');
+    const hashParams = new URLSearchParams(hashQuery);
+    const fromHash = hashParams.get('sala') || hashParams.get('room');
+    if (fromHash) return cleanRoomCode(fromHash);
+  }
+  return '';
 }
 
 export function SetupModal({
@@ -33,27 +48,25 @@ export function SetupModal({
   const [playerCount, setPlayerCount] = useState(2);
   const [aiLevel, setAiLevel] = useState<AILevel>('hard');
 
-  // Estado online
   const [myId] = useState(() => getOrCreateClientId());
   const [playerName, setPlayerName] = useState(() => localStorage.getItem('skyjo_player_name') || '');
   const [joinCode, setJoinCode] = useState('');
+  const [invitedCode, setInvitedCode] = useState<string | null>(null);
   const [room, setRoom] = useState<OnlineRoomRow | null>(null);
   const [fillWithBots, setFillWithBots] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Detectar si abren enlace con ?sala=XXXX
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const codeParam = params.get('sala');
-    if (codeParam) {
+    const codeParam = extractRoomCodeFromUrl();
+    if (codeParam.length === 4) {
       setMode('online');
-      setJoinCode(codeParam.toUpperCase());
+      setJoinCode(codeParam);
+      setInvitedCode(codeParam);
     }
-  }, []);
+  }, [open]);
 
-  // Sincronizar sala de espera cada 1.2s mientras estamos en el lobby
   useEffect(() => {
     if (!open || !room) return;
     let active = true;
@@ -104,15 +117,19 @@ export function SetupModal({
       setError('Escribe tu nombre antes de entrar.');
       return;
     }
-    if (joinCode.trim().length < 4) {
-      setError('Introduce el código de 4 letras.');
+    const clean = cleanRoomCode(joinCode);
+    if (clean.length < 4) {
+      setError('Introduce el código de 4 caracteres.');
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const joined = await joinRoom(joinCode, myId, playerName);
+      const joined = await joinRoom(clean, myId, playerName);
       setRoom(joined);
+      if (window.location.search) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
       if (joined.status === 'playing' && joined.game_state) {
         setRoom(null);
         onJoinStartedOnline(joined, myId);
@@ -124,12 +141,24 @@ export function SetupModal({
     }
   };
 
+  const getInviteUrl = () => {
+    if (!room) return '';
+    return `${window.location.origin}/?sala=${room.code}`;
+  };
+
   const copyInviteLink = () => {
-    if (!room) return;
-    const url = `${window.location.origin}${window.location.pathname}?sala=${room.code}`;
+    const url = getInviteUrl();
+    if (!url) return;
     navigator.clipboard.writeText(url);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
+  };
+
+  const shareWhatsApp = () => {
+    const url = getInviteUrl();
+    if (!url || !room) return;
+    const text = `¡Únete a mi partida de Skyjo! Código: ${room.code}\n${url}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
   };
 
   const isHost = room?.host_id === myId;
@@ -137,7 +166,6 @@ export function SetupModal({
   return (
     <div className="fixed inset-0 z-50 bg-gradient-to-b from-slate-950 to-slate-900 flex items-center justify-center p-4 overflow-y-auto">
       <div className="w-full max-w-md my-auto">
-        {/* Logo header */}
         <div className="text-center mb-4">
           <div className="inline-flex items-center gap-2 mb-1">
             <div
@@ -153,7 +181,6 @@ export function SetupModal({
           <p className="text-slate-400 text-xs">El juego de cartas</p>
         </div>
 
-        {/* Selector de modo */}
         {!room && (
           <div className="grid grid-cols-2 gap-1.5 bg-slate-800/80 p-1 rounded-xl border border-slate-700 mb-3">
             <button
@@ -178,7 +205,6 @@ export function SetupModal({
         <div className="bg-slate-800/60 backdrop-blur border border-slate-700 rounded-2xl p-5 space-y-4">
           {mode === 'solo' ? (
             <>
-              {/* Player count */}
               <div>
                 <label className="flex items-center gap-2 text-sm font-semibold text-slate-200 mb-2">
                   <Users size={16} className="text-emerald-400" /> Jugadores
@@ -203,7 +229,6 @@ export function SetupModal({
                 </p>
               </div>
 
-              {/* AI level */}
               <div>
                 <label className="flex items-center gap-2 text-sm font-semibold text-slate-200 mb-2">
                   <Brain size={16} className="text-emerald-400" /> Inteligencia del bot
@@ -253,7 +278,6 @@ export function SetupModal({
                 </div>
               </div>
 
-              {/* Adaptive memory reset */}
               {aiLevel === 'adaptive' && (
                 <div className="flex items-center justify-between bg-slate-900/50 rounded-lg px-3 py-2 border border-slate-700">
                   <div>
@@ -274,8 +298,13 @@ export function SetupModal({
               </button>
             </>
           ) : !room ? (
-            /* Pantalla Crear / Unirse Online */
             <div className="space-y-4">
+              {invitedCode && (
+                <div className="bg-sky-500/15 border border-sky-400/40 text-sky-200 text-xs px-3 py-2.5 rounded-xl">
+                  Te han invitado a la sala <span className="font-mono font-bold text-amber-300">{invitedCode}</span>. Escribe tu nombre y pulsa <strong>Entrar a sala</strong>.
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1.5">Tu nombre en la mesa</label>
                 <input
@@ -294,6 +323,31 @@ export function SetupModal({
                 </div>
               )}
 
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  maxLength={4}
+                  value={joinCode}
+                  onChange={e => setJoinCode(cleanRoomCode(e.target.value))}
+                  placeholder="CÓDIGO"
+                  className="w-28 bg-slate-900/80 border border-slate-600 focus:border-emerald-400 rounded-xl px-3 py-2.5 text-center font-mono font-bold tracking-widest text-base text-white uppercase outline-none"
+                />
+                <button
+                  onClick={handleJoinRoom}
+                  disabled={loading}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-1.5 text-sm shadow-lg shadow-emerald-600/20"
+                >
+                  {loading ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
+                  Entrar a sala
+                </button>
+              </div>
+
+              <div className="relative flex py-1 items-center">
+                <div className="flex-grow border-t border-slate-700" />
+                <span className="flex-shrink mx-3 text-[11px] text-slate-500 uppercase">o crea una nueva</span>
+                <div className="flex-grow border-t border-slate-700" />
+              </div>
+
               <button
                 onClick={handleCreateRoom}
                 disabled={loading}
@@ -302,33 +356,8 @@ export function SetupModal({
                 {loading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
                 Crear sala nueva
               </button>
-
-              <div className="relative flex py-1 items-center">
-                <div className="flex-grow border-t border-slate-700" />
-                <span className="flex-shrink mx-3 text-[11px] text-slate-500 uppercase">o únete con código</span>
-                <div className="flex-grow border-t border-slate-700" />
-              </div>
-
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  maxLength={4}
-                  value={joinCode}
-                  onChange={e => setJoinCode(e.target.value.toUpperCase())}
-                  placeholder="CÓDIGO"
-                  className="w-28 bg-slate-900/80 border border-slate-600 focus:border-emerald-400 rounded-xl px-3 py-2.5 text-center font-mono font-bold tracking-widest text-base text-white uppercase outline-none"
-                />
-                <button
-                  onClick={handleJoinRoom}
-                  disabled={loading}
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-1.5 text-sm"
-                >
-                  <LogIn size={16} /> Entrar a sala
-                </button>
-              </div>
             </div>
           ) : (
-            /* Sala de espera (Lobby) */
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <button
@@ -345,13 +374,21 @@ export function SetupModal({
               <div className="bg-slate-900/90 border border-slate-700 rounded-xl p-4 text-center">
                 <p className="text-[11px] text-slate-400 uppercase tracking-wider mb-1">Código de la sala</p>
                 <p className="text-3xl font-mono font-black tracking-[0.25em] text-amber-300">{room.code}</p>
-                <button
-                  onClick={copyInviteLink}
-                  className="mt-2.5 inline-flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-emerald-300 px-3 py-1.5 rounded-lg border border-slate-600 transition-colors"
-                >
-                  {copied ? <Check size={14} /> : <Copy size={14} />}
-                  {copied ? '¡Enlace copiado para WhatsApp!' : 'Copiar enlace de invitación'}
-                </button>
+                <div className="mt-3 flex flex-col sm:flex-row gap-2 justify-center">
+                  <button
+                    onClick={shareWhatsApp}
+                    className="inline-flex items-center justify-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-3.5 py-2 rounded-lg transition-colors"
+                  >
+                    <Share2 size={14} /> Enviar por WhatsApp
+                  </button>
+                  <button
+                    onClick={copyInviteLink}
+                    className="inline-flex items-center justify-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-emerald-300 px-3.5 py-2 rounded-lg border border-slate-600 transition-colors"
+                  >
+                    {copied ? <Check size={14} /> : <Copy size={14} />}
+                    {copied ? '¡Enlace copiado!' : 'Copiar enlace'}
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-1.5">

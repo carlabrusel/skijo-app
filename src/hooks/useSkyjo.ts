@@ -99,6 +99,7 @@ function freshState(config: GameConfig, customPlayers?: Player[]): SyncedGameSta
     turnOrder: players.map(p => p.id),
     discardCounts: {},
     discardPulse: false,
+    roundHistory: [],
     _rev: 1,
     _roundResult: null,
   };
@@ -108,6 +109,97 @@ function updateDiscardCounts(counts: Record<number, number>, card: Card): Record
   return { ...counts, [card.value]: (counts[card.value] || 0) + 1 };
 }
 
+// Mejora 1: fusiona el estado remoto con las cartas iniciales volteadas localmente para que nunca se pisen
+function mergeInitialRevealStates(
+  local: SyncedGameState,
+  remote: SyncedGameState,
+  myId: string
+): { merged: SyncedGameState; needsRePush: boolean } {
+  if (local.phase !== 'reveal_initial' || remote.phase !== 'reveal_initial') {
+    return { merged: remote, needsRePush: false };
+  }
+  if (local.roundNumber !== remote.roundNumber) {
+    return { merged: remote, needsRePush: false };
+  }
+
+  const localMe = local.players.find(p => p.id === myId);
+  const remoteMe = remote.players.find(p => p.id === myId);
+  if (!localMe || !remoteMe) {
+    return { merged: remote, needsRePush: false };
+  }
+
+  const localMyCount = localMe.board.filter(c => c.revealed).length;
+  const remoteMyCount = remoteMe.board.filter(c => c.revealed).length;
+
+  // Si localmente tengo más cartas reveladas mías que lo que llegó de Supabase, conservar mi tablero
+  if (localMyCount <= remoteMyCount) {
+    return { merged: remote, needsRePush: false };
+  }
+
+  const mergedPlayers = remote.players.map(p => (p.id === myId ? localMe : p));
+  const mergedInitialRevealed: Record<string, number> = {
+    ...remote.initialRevealed,
+    [myId]: localMyCount,
+  };
+
+  const humanPlayers = mergedPlayers.filter(p => !p.isBot);
+  const allHumansReady = humanPlayers.every(hp => (mergedInitialRevealed[hp.id] ?? 0) >= 2);
+
+  if (!allHumansReady) {
+    return {
+      merged: {
+        ...remote,
+        players: mergedPlayers,
+        initialRevealed: mergedInitialRevealed,
+      },
+      needsRePush: true,
+    };
+  }
+
+  // Si con mi jugada ya están todos listos, arrancar la partida directamente
+  let finalPlayers = mergedPlayers;
+  for (const p of finalPlayers) {
+    if (!p.isBot) continue;
+    const botHidden = hiddenIndices(p.board);
+    const picks = shuffle([...botHidden]).slice(0, 2);
+    finalPlayers = finalPlayers.map(bp => {
+      if (bp.id !== p.id) return bp;
+      const board = bp.board.map((c, i) => (picks.includes(i) ? { ...c, revealed: true } : c));
+      return { ...bp, board };
+    });
+  }
+
+  let bestId = '';
+  let bestSum = -Infinity;
+  for (const p of finalPlayers) {
+    const revealedVals = p.board.filter(c => c.revealed && c.card).map(c => c.card!.value);
+    const sum = revealedVals.reduce((a, b) => a + b, 0);
+    if (sum > bestSum) {
+      bestSum = sum;
+      bestId = p.id;
+    }
+  }
+  const startIdx = finalPlayers.findIndex(p => p.id === bestId);
+  const starter = finalPlayers[startIdx];
+
+  return {
+    merged: {
+      ...remote,
+      players: finalPlayers,
+      initialRevealed: mergedInitialRevealed,
+      currentPlayerIndex: startIdx,
+      phase: 'playing',
+      stage: starter.isBot ? 'bot_thinking' : 'choose_source',
+      lastAction: starter.isBot
+        ? `${starter.name} empieza...`
+        : starter.id === myId
+          ? '¡Empiezas tú! Roba del mazo o coge del descarte'
+          : `¡Empieza ${starter.name}!`,
+    },
+    needsRePush: true,
+  };
+}
+
 export function useSkyjo() {
   const [state, setState] = useState<SyncedGameState | null>(null);
   const [localPlayerId, setLocalPlayerId] = useState<string>(PLAYER_ID);
@@ -115,6 +207,7 @@ export function useSkyjo() {
   const [hostId, setHostId] = useState<string | null>(null);
   const [roundResult, setRoundResult] = useState<RoundResult | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(true);
   const [gameWinner, setGameWinner] = useState<string | null>(null);
   const [memory, setMemory] = useState<AdaptiveMemory>(() => loadMemory());
@@ -122,8 +215,9 @@ export function useSkyjo() {
   const busyRef = useRef(false);
   const roundTurnsRef = useRef(0);
   const pendingFinishRef = useRef<{ result: RoundResult } | null>(null);
+  const stateRef = useRef<SyncedGameState | null>(null);
+  stateRef.current = state;
 
-  // Control anti-rebote para sincronización online
   const localRevRef = useRef<number>(0);
   const syncLockUntilRef = useRef<number>(0);
   const pushInFlightRef = useRef<boolean>(false);
@@ -138,7 +232,6 @@ export function useSkyjo() {
       const nextRev = Math.max(localRevRef.current + 1, (nextState._rev ?? 0) + 1);
       const stamped: SyncedGameState = { ...nextState, _rev: nextRev };
       localRevRef.current = nextRev;
-      // Bloquea lecturas remotas viejas durante 1.8s mientras Supabase confirma la escritura
       syncLockUntilRef.current = Date.now() + 1800;
 
       if (pushInFlightRef.current) {
@@ -185,14 +278,13 @@ export function useSkyjo() {
     [roomCode, pushOnlineState]
   );
 
-  // Sincronización periódica (polling protegido contra rebote) en modo online
+  // Sincronización periódica con fusión segura en fase inicial
   useEffect(() => {
     if (!roomCode) return;
     let active = true;
 
     const poll = async () => {
       if (!active) return;
-      // Si acabamos de hacer una jugada local o estamos subiendo cambios, ignorar lectura para evitar rebote
       if (pushInFlightRef.current || Date.now() < syncLockUntilRef.current) {
         return;
       }
@@ -206,6 +298,22 @@ export function useSkyjo() {
       const remoteRev = remoteState._rev ?? 0;
 
       if (remoteRev > localRevRef.current) {
+        const currentLocal = stateRef.current;
+        if (currentLocal) {
+          const { merged, needsRePush } = mergeInitialRevealStates(
+            currentLocal,
+            remoteState,
+            localPlayerId
+          );
+          if (needsRePush) {
+            const stamped = { ...merged, _rev: remoteRev + 1 };
+            localRevRef.current = stamped._rev;
+            setState(stamped);
+            void pushOnlineState(stamped);
+            return;
+          }
+        }
+
         localRevRef.current = remoteRev;
         setState(remoteState);
         if (remoteState._roundResult !== undefined) {
@@ -220,7 +328,7 @@ export function useSkyjo() {
       active = false;
       clearInterval(interval);
     };
-  }, [roomCode]);
+  }, [roomCode, localPlayerId, pushOnlineState]);
 
   const startGame = useCallback((config: GameConfig) => {
     roundTurnsRef.current = 0;
@@ -335,7 +443,6 @@ export function useSkyjo() {
 
   const triggerDiscardPulse = useCallback(() => {}, []);
 
-  // Espera 3 segundos con todas las cartas volteadas en la mesa antes de mostrar el modal de resultados
   useEffect(() => {
     if (state?.phase === 'end_routine' && pendingFinishRef.current) {
       const { result } = pendingFinishRef.current;
@@ -354,7 +461,6 @@ export function useSkyjo() {
     }
   }, [state?.phase, roomCode, isHost, applyLocalMutation]);
 
-  // En modo online, si el estado remoto ya trae _roundResult tras los 3s, mostrarlo
   useEffect(() => {
     if (isOnline && state?.phase === 'end_routine' && state._roundResult && !roundResult) {
       setRoundResult(state._roundResult);
@@ -496,6 +602,12 @@ export function useSkyjo() {
 
       pendingFinishRef.current = { result };
 
+      const prevHistory = s.roundHistory ?? [];
+      const updatedHistory = [
+        ...prevHistory.filter(h => h.roundNumber !== s.roundNumber),
+        { roundNumber: s.roundNumber, result },
+      ];
+
       return {
         ...s,
         players: updatedPlayers,
@@ -503,13 +615,13 @@ export function useSkyjo() {
         stage: 'choose_source',
         pendingDraw: null,
         pendingHighlight: null,
+        roundHistory: updatedHistory,
         lastAction: '¡Ronda terminada! Revelando cartas...',
       };
     },
     [isOnline, localPlayerId, memory]
   );
 
-  // ---- Gestión unificada de avance de turno y cierre de ronda ----
   const advanceToNextPlayer = useCallback((s: SyncedGameState): SyncedGameState => {
     const curIdx = s.currentPlayerIndex;
     let nextIdx = (curIdx + 1) % s.turnOrder.length;
@@ -574,7 +686,6 @@ export function useSkyjo() {
     [advanceToNextPlayer, endRound]
   );
 
-  // ---- Player initial reveal (soporta 1 jugador o varios humanos online) ----
   const revealInitialCard = useCallback(
     (index: number) => {
       applyLocalMutation(prev => {
@@ -595,7 +706,6 @@ export function useSkyjo() {
         const count = currentCount + 1;
         const updatedInitialRevealed = { ...prev.initialRevealed, [pid]: count };
 
-        // Comprobar si todos los humanos han revelado ya sus 2 cartas
         const humanPlayers = players.filter(p => !p.isBot);
         const allHumansReady = humanPlayers.every(hp => (updatedInitialRevealed[hp.id] ?? 0) >= 2);
 
@@ -612,7 +722,6 @@ export function useSkyjo() {
           };
         }
 
-        // Todos los humanos listos: revelar 2 cartas a cada bot
         let finalPlayers = players;
         for (const p of finalPlayers) {
           if (!p.isBot) continue;
@@ -656,7 +765,6 @@ export function useSkyjo() {
     [applyLocalMutation, localPlayerId]
   );
 
-  // ---- Player source choice ----
   const playerTakeDiscard = useCallback(() => {
     applyLocalMutation(prev => {
       if (prev.phase !== 'playing') return prev;
@@ -779,7 +887,6 @@ export function useSkyjo() {
     );
   }, [applyLocalMutation, roomCode]);
 
-  // ---- Bot turn runner (en online solo lo ejecuta el anfitrión para evitar duplicados) ----
   const runBotTurn = useCallback(
     async (cur: SyncedGameState) => {
       let s = cur;
@@ -985,10 +1092,12 @@ export function useSkyjo() {
     localPlayerId,
     roundResult,
     rulesOpen,
+    historyOpen,
     setupOpen,
     gameWinner,
     memory,
     setRulesOpen,
+    setHistoryOpen,
     setSetupOpen,
     startGame,
     startOnlineGame,

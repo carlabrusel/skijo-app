@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
-import { X, BookOpen, ArrowRight, RotateCcw, Crown, Trophy, Home } from 'lucide-react';
-import { RoundResult, PLAYER_ID } from '@/game/types';
+import { useEffect, useRef, useState } from 'react';
+import { X, BookOpen, ArrowRight, RotateCcw, Crown, Trophy, Home, Eye, History } from 'lucide-react';
+import { RoundResult, RoundHistoryEntry, PLAYER_ID } from '@/game/types';
 import confetti from 'canvas-confetti';
 
 export function RulesModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -40,6 +40,95 @@ export function RulesModal({ open, onClose }: { open: boolean; onClose: () => vo
   );
 }
 
+export function HistoryModal({
+  open,
+  history,
+  currentRound,
+  onClose,
+}: {
+  open: boolean;
+  history: RoundHistoryEntry[];
+  currentRound: number;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full max-h-[82vh] overflow-y-auto p-5 text-slate-200 shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-bold flex items-center gap-2 text-white">
+            <History size={18} className="text-amber-400" /> Libreta de Rondas
+          </h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-white">
+            <X size={20} />
+          </button>
+        </div>
+
+        <p className="text-xs text-slate-400 mb-4">
+          Ronda actual en curso: <span className="font-bold text-amber-300">Ronda {currentRound}</span>
+        </p>
+
+        {history.length === 0 ? (
+          <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4 text-center text-xs text-slate-400">
+            Aún no se ha completado ninguna ronda. Aquí aparecerá el desglose de puntos cuando termine la Ronda 1.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {history.map(entry => (
+              <div key={entry.roundNumber} className="bg-slate-800/60 border border-slate-700 rounded-xl overflow-hidden">
+                <div className="bg-slate-800 px-3 py-1.5 flex items-center justify-between border-b border-slate-700">
+                  <span className="text-xs font-bold text-amber-300">Ronda {entry.roundNumber}</span>
+                  <span className="text-[10px] text-slate-400">Ronda / Acumulado</span>
+                </div>
+                {entry.result.players.map((p, idx) => (
+                  <div
+                    key={p.id}
+                    className={`flex items-center justify-between px-3 py-2 text-xs ${
+                      idx % 2 === 0 ? 'bg-slate-800/20' : ''
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="font-medium text-white truncate">{p.name}</span>
+                      {p.closed && (
+                        <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-semibold">
+                          cerró
+                        </span>
+                      )}
+                      {p.doubled && (
+                        <span className="text-[9px] bg-rose-500/20 text-rose-300 px-1.5 py-0.5 rounded font-semibold">
+                          x2
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 tabular-nums">
+                      <span className={`font-bold ${p.roundScore > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                        {p.roundScore > 0 ? `+${p.roundScore}` : p.roundScore}
+                      </span>
+                      <span className="text-slate-500">/</span>
+                      <span className="font-bold text-white">{p.finalScore}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button
+          onClick={onClose}
+          className="mt-4 w-full bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded-lg border border-slate-600 text-xs transition-colors"
+        >
+          Cerrar libreta
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function RoundModal({
   result,
   roundNumber,
@@ -49,7 +138,23 @@ export function RoundModal({
   roundNumber: number;
   onNext: () => void;
 }) {
+  const [peeking, setPeeking] = useState(false);
+
   if (!result) return null;
+
+  if (peeking) {
+    return (
+      <div className="fixed bottom-4 inset-x-0 z-50 flex justify-center px-4">
+        <button
+          onClick={() => setPeeking(false)}
+          className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-5 py-3 rounded-full shadow-2xl border-2 border-emerald-300 flex items-center gap-2 text-sm"
+        >
+          <Trophy size={16} /> Volver a resultados (Ronda {roundNumber})
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-5 text-slate-200 shadow-2xl">
@@ -85,9 +190,20 @@ export function RoundModal({
           ))}
         </div>
 
-        <button onClick={onNext} className="mt-5 w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2">
-          {result.isFinal ? 'Ver resultado final' : 'Siguiente ronda'} <ArrowRight size={18} />
-        </button>
+        <div className="mt-5 flex flex-col gap-2">
+          <button
+            onClick={onNext}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            {result.isFinal ? 'Ver resultado final' : 'Siguiente ronda'} <ArrowRight size={18} />
+          </button>
+          <button
+            onClick={() => setPeeking(true)}
+            className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold py-2 rounded-lg border border-slate-600 transition-colors flex items-center justify-center gap-2 text-xs"
+          >
+            <Eye size={15} /> Ver cómo han quedado las mesas
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -132,16 +248,19 @@ function CardRainOverlay() {
 
 export function GameOverModal({
   result,
+  localPlayerId = PLAYER_ID,
   onPlayAgain,
   onReset,
 }: {
   result: RoundResult;
+  localPlayerId?: string;
   onPlayAgain: () => void;
   onReset: () => void;
 }) {
   const winner = result.players.find(p => p.id === result.winner);
-  const youWon = result.winner === PLAYER_ID;
+  const youWon = result.winner === localPlayerId;
   const firedRef = useRef(false);
+  const [peeking, setPeeking] = useState(false);
 
   useEffect(() => {
     if (firedRef.current) return;
@@ -172,6 +291,19 @@ export function GameOverModal({
     }
   }, [youWon]);
 
+  if (peeking) {
+    return (
+      <div className="fixed bottom-4 inset-x-0 z-50 flex justify-center px-4">
+        <button
+          onClick={() => setPeeking(false)}
+          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-5 py-3 rounded-full shadow-2xl border-2 border-amber-200 flex items-center gap-2 text-sm"
+        >
+          <Trophy size={16} /> Volver a clasificación final
+        </button>
+      </div>
+    );
+  }
+
   return (
     <>
       {!youWon && <CardRainOverlay />}
@@ -190,7 +322,7 @@ export function GameOverModal({
             </p>
           )}
           <p className="text-slate-400 mb-5 text-sm">
-            {youWon ? 'Felicidades, mantuviste tu puntuación baja.' : 'El bot fue mejor esta vez. ¡Inténtalo de nuevo!'}
+            {youWon ? 'Felicidades, mantuviste tu puntuación baja.' : 'El rival fue mejor esta vez. ¡Inténtalo de nuevo!'}
           </p>
 
           <div className="bg-slate-800/50 rounded-xl border border-slate-700 overflow-hidden mb-5">
@@ -206,6 +338,12 @@ export function GameOverModal({
           </div>
 
           <div className="flex flex-col gap-2">
+            <button
+              onClick={() => setPeeking(true)}
+              className="w-full bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold py-2 rounded-lg border border-amber-500/30 transition-colors flex items-center justify-center gap-2 text-xs"
+            >
+              <Eye size={15} /> Ver cómo han quedado las mesas
+            </button>
             <button
               onClick={onPlayAgain}
               className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2"
