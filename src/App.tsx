@@ -5,7 +5,7 @@ import { OpponentsBar } from '@/components/OpponentsBar';
 import { BoardGrid } from '@/components/BoardGrid';
 import { CardView } from '@/components/CardView';
 import { SetupModal } from '@/components/SetupModal';
-import { RulesModal, RoundModal, GameOverModal } from '@/components/Modals';
+import { RulesModal, HistoryModal, RoundModal, GameOverModal } from '@/components/Modals';
 import { getVisibleScore } from '@/game/board';
 import { Layers, Trash2, Hand, ArrowDownToLine, User, AlertTriangle } from 'lucide-react';
 
@@ -100,7 +100,13 @@ export default function App() {
       }}
     >
       <div className="shrink-0">
-        <TopBar state={reorderedState} memory={game.memory} onRules={() => game.setRulesOpen(true)} onReset={game.resetGame} />
+        <TopBar
+          state={reorderedState}
+          memory={game.memory}
+          onRules={() => game.setRulesOpen(true)}
+          onHistory={() => game.setHistoryOpen(true)}
+          onReset={game.resetGame}
+        />
       </div>
 
       {state.lastRoundTriggered && state.phase !== 'end_routine' && (
@@ -226,6 +232,12 @@ export default function App() {
       </div>
 
       <RulesModal open={game.rulesOpen} onClose={() => game.setRulesOpen(false)} />
+      <HistoryModal
+        open={game.historyOpen}
+        history={state.roundHistory ?? []}
+        currentRound={state.roundNumber}
+        onClose={() => game.setHistoryOpen(false)}
+      />
       {game.roundResult && !game.gameWinner && (
         <RoundModal
           result={game.roundResult}

@@ -8,7 +8,6 @@ const headers: Record<string, string> = {
   Authorization: `Bearer ${SUPABASE_KEY}`,
   'Content-Type': 'application/json',
   Prefer: 'return=representation',
-  'Cache-Control': 'no-cache, no-store, must-revalidate',
 };
 
 export interface OnlineLobbyPlayer {
@@ -46,6 +45,10 @@ export function generateRoomCode(): string {
   return code;
 }
 
+export function cleanRoomCode(raw: string): string {
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+}
+
 export async function createRoom(hostId: string, hostName: string): Promise<OnlineRoomRow> {
   const code = generateRoomCode();
   const payload = {
@@ -64,16 +67,22 @@ export async function createRoom(hostId: string, hostName: string): Promise<Onli
   });
 
   if (!res.ok) {
-    throw new Error('No se pudo crear la sala. Revisa la tabla en Supabase.');
+    const errText = await res.text().catch(() => '');
+    throw new Error(`No se pudo crear la sala (${res.status}). ${errText}`);
   }
   const data = await res.json();
+  if (!Array.isArray(data) || !data[0]) {
+    throw new Error('Supabase no devolvió la sala creada.');
+  }
   return data[0];
 }
 
 export async function getRoom(code: string): Promise<OnlineRoomRow | null> {
-  const clean = code.trim().toUpperCase();
+  const clean = cleanRoomCode(code);
+  if (clean.length < 4) return null;
+
   const res = await fetch(
-    `${REST_URL}?code=eq.${encodeURIComponent(clean)}&select=*&_t=${Date.now()}`,
+    `${REST_URL}?code=eq.${encodeURIComponent(clean)}&select=*`,
     {
       headers,
       cache: 'no-store',
@@ -81,12 +90,33 @@ export async function getRoom(code: string): Promise<OnlineRoomRow | null> {
   );
   if (!res.ok) return null;
   const data = await res.json();
-  return data[0] ?? null;
+  return Array.isArray(data) && data[0] ? data[0] : null;
 }
 
 export async function joinRoom(code: string, playerId: string, playerName: string): Promise<OnlineRoomRow> {
-  const room = await getRoom(code);
-  if (!room) throw new Error('Sala no encontrada. Comprueba el código.');
+  const clean = cleanRoomCode(code);
+  if (clean.length < 4) {
+    throw new Error('El código de sala debe tener 4 caracteres.');
+  }
+
+  const resCheck = await fetch(
+    `${REST_URL}?code=eq.${encodeURIComponent(clean)}&select=*`,
+    {
+      headers,
+      cache: 'no-store',
+    }
+  );
+
+  if (!resCheck.ok) {
+    throw new Error(`Error de conexión con el servidor (${resCheck.status}).`);
+  }
+
+  const rows = await resCheck.json();
+  const room: OnlineRoomRow | null = Array.isArray(rows) && rows[0] ? rows[0] : null;
+
+  if (!room) {
+    throw new Error(`La sala "${clean}" no existe o ya se cerró.`);
+  }
 
   const exists = room.players.some(p => p.id === playerId);
   if (!exists) {
@@ -113,14 +143,15 @@ export async function joinRoom(code: string, playerId: string, playerName: strin
 
   if (!res.ok) throw new Error('Error al entrar en la sala.');
   const data = await res.json();
-  return data[0];
+  return Array.isArray(data) && data[0] ? data[0] : { ...room, players: updatedPlayers };
 }
 
 export async function updateRoomState(
   code: string,
   patch: Partial<Pick<OnlineRoomRow, 'status' | 'players' | 'game_state'>>
 ): Promise<OnlineRoomRow | null> {
-  const res = await fetch(`${REST_URL}?code=eq.${encodeURIComponent(code)}`, {
+  const clean = cleanRoomCode(code);
+  const res = await fetch(`${REST_URL}?code=eq.${encodeURIComponent(clean)}`, {
     method: 'PATCH',
     headers,
     body: JSON.stringify({
@@ -130,5 +161,5 @@ export async function updateRoomState(
   });
   if (!res.ok) return null;
   const data = await res.json();
-  return data[0] ?? null;
+  return Array.isArray(data) && data[0] ? data[0] : null;
 }

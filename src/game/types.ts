@@ -52,6 +52,11 @@ export interface BotHighlight {
   action: 'take' | 'place' | 'flip';
 }
 
+export interface RoundHistoryEntry {
+  roundNumber: number;
+  result: RoundResult;
+}
+
 export interface GameState {
   config: GameConfig;
   players: Player[];
@@ -72,6 +77,7 @@ export interface GameState {
   turnOrder: string[]; // player ids in order
   discardCounts: Record<number, number>; // value -> count seen on table
   discardPulse: boolean; // brief animation flag when a card is discarded
+  roundHistory?: RoundHistoryEntry[];
 }
 
 export interface RoundPlayerResult {
