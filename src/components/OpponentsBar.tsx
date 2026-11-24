@@ -44,7 +44,8 @@ interface OpponentsBarProps {
 }
 
 export function OpponentsBar({ state }: OpponentsBarProps) {
-  const opponents = state.players.filter(p => p.isBot);
+  // App.tsx coloca siempre al jugador local en index 0, así que los rivales son todos los demás (bots y amigos online)
+  const opponents = state.players.slice(1);
   const currentId = state.players[state.currentPlayerIndex]?.id;
   const cardSize: 'opp' | 'opp-sm' = opponents.length > 1 ? 'opp-sm' : 'opp';
 
