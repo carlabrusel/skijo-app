@@ -22,6 +22,8 @@ interface SetupModalProps {
   onResetMemory: () => void;
 }
 
+const LOBBY_STORAGE_KEY = 'skyjo_active_lobby_code';
+
 function extractRoomCodeFromUrl(): string {
   const searchParams = new URLSearchParams(window.location.search);
   const fromSearch = searchParams.get('sala') || searchParams.get('room');
@@ -58,33 +60,74 @@ export function SetupModal({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Recupera invitación por URL o reconecta automáticamente a la sala si iOS recargó la pestaña al volver de WhatsApp
   useEffect(() => {
+    if (!open) return;
+
     const codeParam = extractRoomCodeFromUrl();
     if (codeParam.length === 4) {
       setMode('online');
       setJoinCode(codeParam);
       setInvitedCode(codeParam);
+      return;
     }
-  }, [open]);
 
+    const savedLobbyCode = sessionStorage.getItem(LOBBY_STORAGE_KEY);
+    if (savedLobbyCode && savedLobbyCode.length === 4 && !room) {
+      setMode('online');
+      setLoading(true);
+      getRoom(savedLobbyCode)
+        .then(existing => {
+          if (!existing) {
+            sessionStorage.removeItem(LOBBY_STORAGE_KEY);
+            return;
+          }
+          const amIInRoom = existing.players.some(p => p.id === myId);
+          if (!amIInRoom) {
+            sessionStorage.removeItem(LOBBY_STORAGE_KEY);
+            return;
+          }
+          if (existing.status === 'playing' && existing.game_state) {
+            sessionStorage.removeItem(LOBBY_STORAGE_KEY);
+            onJoinStartedOnline(existing, myId);
+          } else {
+            setRoom(existing);
+          }
+        })
+        .finally(() => setLoading(false));
+    }
+  }, [open, myId, room, onJoinStartedOnline]);
+
+  // Refresca la sala tanto por intervalo como al volver de WhatsApp (visibilitychange)
   useEffect(() => {
     if (!open || !room) return;
     let active = true;
-    const interval = setInterval(async () => {
+
+    const syncRoom = async () => {
       if (!active) return;
       const fresh = await getRoom(room.code);
       if (!fresh || !active) return;
       setRoom(fresh);
       if (fresh.status === 'playing' && fresh.game_state) {
         active = false;
-        clearInterval(interval);
+        sessionStorage.removeItem(LOBBY_STORAGE_KEY);
         setRoom(null);
         onJoinStartedOnline(fresh, myId);
       }
-    }, 1200);
+    };
+
+    const interval = setInterval(syncRoom, 1200);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        syncRoom();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       active = false;
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [open, room, myId, onJoinStartedOnline]);
 
@@ -104,6 +147,7 @@ export function SetupModal({
     setError(null);
     try {
       const created = await createRoom(myId, playerName);
+      sessionStorage.setItem(LOBBY_STORAGE_KEY, created.code);
       setRoom(created);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al crear sala');
@@ -126,13 +170,16 @@ export function SetupModal({
     setError(null);
     try {
       const joined = await joinRoom(clean, myId, playerName);
-      setRoom(joined);
       if (window.location.search) {
         window.history.replaceState({}, '', window.location.pathname);
       }
       if (joined.status === 'playing' && joined.game_state) {
+        sessionStorage.removeItem(LOBBY_STORAGE_KEY);
         setRoom(null);
         onJoinStartedOnline(joined, myId);
+      } else {
+        sessionStorage.setItem(LOBBY_STORAGE_KEY, joined.code);
+        setRoom(joined);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo entrar en la sala');
@@ -154,11 +201,33 @@ export function SetupModal({
     setTimeout(() => setCopied(false), 2500);
   };
 
-  const shareWhatsApp = () => {
+  const shareWhatsApp = async () => {
     const url = getInviteUrl();
     if (!url || !room) return;
-    const text = `¡Únete a mi partida de Skyjo! Código: ${room.code}\n${url}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
+    sessionStorage.setItem(LOBBY_STORAGE_KEY, room.code);
+    const text = `¡Únete a mi partida de Skyjo! Código: ${room.code}`;
+
+    // En iOS / Android abre el menú nativo para enviar por WhatsApp sin abandonar ni dejar en blanco la web
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Skyjo Online',
+          text,
+          url,
+        });
+        return;
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return;
+      }
+    }
+
+    const fullMsg = `${text}\n${url}`;
+    window.location.href = `https://api.whatsapp.com/send?text=${encodeURIComponent(fullMsg)}`;
+  };
+
+  const leaveLobby = () => {
+    sessionStorage.removeItem(LOBBY_STORAGE_KEY);
+    setRoom(null);
   };
 
   const isHost = room?.host_id === myId;
@@ -361,7 +430,7 @@ export function SetupModal({
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <button
-                  onClick={() => setRoom(null)}
+                  onClick={leaveLobby}
                   className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
                 >
                   <ArrowLeft size={14} /> Salir
@@ -428,6 +497,7 @@ export function SetupModal({
                   <button
                     onClick={() => {
                       const currentRoom = room;
+                      sessionStorage.removeItem(LOBBY_STORAGE_KEY);
                       setRoom(null);
                       onStartOnline(currentRoom, myId, fillWithBots);
                     }}
