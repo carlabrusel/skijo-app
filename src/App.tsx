@@ -79,7 +79,7 @@ export default function App() {
 
   const deckEmpty = state.deck.length === 0;
   const discardTop = state.discard[0] ?? null;
-  const centerCardClass = 'h-[8.5dvh] max-h-16 aspect-[2/3]';
+  const centerCardClass = 'h-[8dvh] max-h-16 aspect-[2/3]';
 
   const currentActivePlayerId = state.players[state.currentPlayerIndex]?.id;
   const reorderedPlayers = [
@@ -94,11 +94,12 @@ export default function App() {
 
   return (
     <div
-      className="h-dvh max-w-md mx-auto flex flex-col justify-between overflow-hidden text-white px-2 pt-[calc(0.35rem+env(safe-area-inset-top))] pb-[calc(1.75rem+env(safe-area-inset-bottom))]"
+      className="h-dvh max-w-md mx-auto flex flex-col justify-between overflow-hidden text-white px-3 pt-[calc(0.9rem+env(safe-area-inset-top))] pb-[calc(1.15rem+env(safe-area-inset-bottom))]"
       style={{
         background: 'radial-gradient(ellipse at center top, #1e3a5f 0%, #0f1e30 40%, #0a1620 100%)',
       }}
     >
+      {/* 1. Barra superior */}
       <div className="shrink-0">
         <TopBar
           state={reorderedState}
@@ -109,17 +110,18 @@ export default function App() {
         />
       </div>
 
-      {state.lastRoundTriggered && state.phase !== 'end_routine' && (
-        <div className="shrink-0 bg-amber-500/20 border-y border-amber-500/40 px-3 py-0.5 flex items-center justify-center gap-1.5 text-amber-300 text-[11px] font-semibold animate-pulse">
-          <AlertTriangle size={12} /> ¡Última ronda!
-        </div>
-      )}
-
-      <div className="shrink-0 flex flex-col justify-center px-1 py-0.5">
+      {/* 2. Zona de rivales + aviso de última ronda */}
+      <div className="shrink-0 flex flex-col items-center justify-center gap-1 my-auto">
+        {state.lastRoundTriggered && state.phase !== 'end_routine' && (
+          <div className="w-full rounded-full bg-amber-500/20 border border-amber-500/40 px-3 py-0.5 flex items-center justify-center gap-1.5 text-amber-300 text-[11px] font-semibold animate-pulse">
+            <AlertTriangle size={12} /> ¡Última ronda!
+          </div>
+        )}
         <OpponentsBar state={reorderedState} />
       </div>
 
-      <div className="shrink-0 py-0.5 flex flex-col items-center gap-1 z-10">
+      {/* 3. Zona central: mensaje + Mazo / Descarte / Mano + hueco reservado para el botón Descartar */}
+      <div className="shrink-0 flex flex-col items-center justify-center gap-1.5 my-auto z-10">
         <p
           className={`text-xs text-center px-3 py-0.5 rounded-full bg-slate-900/80 font-semibold leading-snug max-w-full ${
             botThinking ? 'text-amber-300' : isPlayerTurn ? 'text-emerald-300' : 'text-slate-300'
@@ -128,7 +130,7 @@ export default function App() {
           {state.lastAction}
         </p>
 
-        <div className="flex items-end gap-3 sm:gap-5">
+        <div className="flex items-end justify-center gap-4 sm:gap-5">
           <div className="flex flex-col items-center gap-0.5">
             <button
               onClick={canChooseSource ? game.playerDrawDeck : undefined}
@@ -200,18 +202,22 @@ export default function App() {
           </div>
         </div>
 
-        {mustPlace && state.pendingDraw && (
-          <button
-            onClick={game.playerDiscardDrawn}
-            className="px-4 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 ring-2 ring-amber-400/40 animate-pulse"
-          >
-            <ArrowDownToLine size={13} /> Descartar robada
-          </button>
-        )}
+        {/* Altura fija reservada para el botón de descartar: nunca empujará ni pisará el tablero inferior */}
+        <div className="h-7 flex items-center justify-center">
+          {mustPlace && state.pendingDraw && (
+            <button
+              onClick={game.playerDiscardDrawn}
+              className="px-4 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 ring-2 ring-amber-400/40 shadow-md"
+            >
+              <ArrowDownToLine size={13} /> Descartar robada
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col justify-end border-t border-slate-800/50 px-2 pt-1">
-        <div className="flex items-center justify-between mb-1 shrink-0">
+      {/* 4. Tablero del jugador */}
+      <div className="shrink-0 flex flex-col justify-center border-t border-slate-800/50 px-1 pt-2">
+        <div className="flex items-center justify-between mb-1.5 px-1 shrink-0">
           <span className={`flex items-center gap-1.5 text-xs font-semibold ${isPlayerTurn ? 'text-amber-300' : 'text-emerald-400'}`}>
             <User size={14} /> {player.name}
             {isPlayerTurn && <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded-full">tu turno</span>}
