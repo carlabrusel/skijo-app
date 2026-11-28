@@ -1,10 +1,10 @@
-import { Board, Cell } from './types';
+import { Board, Card, Cell } from './types';
 
 export function emptyBoard(): Board {
   return Array.from({ length: 12 }, () => ({ card: null, revealed: false, eliminated: false }));
 }
 
-export function dealCardsToBoard(board: Board, cards: { id: string; value: number }[]): Board {
+export function dealCardsToBoard(board: Board, cards: Card[]): Board {
   const b = board.map(c => ({ ...c }));
   for (let i = 0; i < 12 && i < cards.length; i++) {
     b[i] = { card: cards[i], revealed: false, eliminated: false };
@@ -16,17 +16,23 @@ export function allRevealed(board: Board): boolean {
   return board.every(c => c.revealed || c.eliminated);
 }
 
+export function effectiveCardPoints(card: Card | null): number {
+  if (!card) return 0;
+  if (card.kind === 'star' || card.kind === 'action') return 0;
+  return card.value;
+}
+
 export function getVisibleScore(board: Board): number {
   return board.reduce((sum, c) => {
     if (c.eliminated || !c.revealed) return sum;
-    return sum + (c.card ? c.card.value : 0);
+    return sum + effectiveCardPoints(c.card);
   }, 0);
 }
 
 export function getFullScore(board: Board): number {
   return board.reduce((sum, c) => {
     if (c.eliminated) return sum;
-    return sum + (c.card ? c.card.value : 0);
+    return sum + effectiveCardPoints(c.card);
   }, 0);
 }
 
@@ -43,8 +49,19 @@ export function findEliminableColumns(board: Board): number[] {
       return c.revealed && c.card !== null && !c.eliminated;
     });
     if (!allRevealedCol) continue;
-    const v = board[cells[0]].card!.value;
-    if (cells.every(i => board[i].card!.value === v)) {
+
+    const cards = cells.map(i => board[i].card!);
+    // Cartas de acción nunca forman columna
+    if (cards.some(c => c.kind === 'action')) continue;
+
+    const nonStars = cards.filter(c => c.kind !== 'star');
+    if (nonStars.length === 0) {
+      // 3 estrellas juntas eliminan columna
+      cols.push(col);
+      continue;
+    }
+    const targetVal = nonStars[0].value;
+    if (nonStars.every(c => c.value === targetVal)) {
       cols.push(col);
     }
   }
@@ -68,7 +85,12 @@ export function eliminateColumns(board: Board, cols: number[]): { board: Board; 
 export function visibleCardValueAt(board: Board, idx: number): number | null {
   const c = board[idx];
   if (!c.revealed || !c.card || c.eliminated) return null;
-  return c.card.value;
+  return effectiveCardPoints(c.card);
+}
+
+export function isStarAt(board: Board, idx: number): boolean {
+  const c = board[idx];
+  return Boolean(c.revealed && c.card && !c.eliminated && c.card.kind === 'star');
 }
 
 export function highestVisibleIndex(board: Board): number | null {

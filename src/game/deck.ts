@@ -1,4 +1,4 @@
-import { Card } from './types';
+import { ActionType, Card } from './types';
 
 const COUNTS: Record<number, number> = {
   [-2]: 5,
@@ -8,16 +8,40 @@ const COUNTS: Record<number, number> = {
   7: 10, 8: 10, 9: 10, 10: 10, 11: 10, 12: 10,
 };
 
+const ACTION_COUNTS: Record<ActionType, number> = {
+  swap_own: 4,
+  swap_opponent: 4,
+  swap_column: 4,
+  peek: 4,
+  draw_two: 4,
+  extra_turn: 4,
+};
+
+const STAR_COUNT = 10;
+
 let idCounter = 0;
 
-export function createDeck(): Card[] {
+export function createDeck(withExpansion = false): Card[] {
   const deck: Card[] = [];
   for (const [valStr, count] of Object.entries(COUNTS)) {
     const value = parseInt(valStr, 10);
     for (let i = 0; i < count; i++) {
-      deck.push({ id: `c${idCounter++}`, value });
+      deck.push({ id: `c${idCounter++}`, value, kind: 'number' });
     }
   }
+
+  if (withExpansion) {
+    for (let i = 0; i < STAR_COUNT; i++) {
+      deck.push({ id: `c${idCounter++}`, value: 0, kind: 'star' });
+    }
+    for (const [actStr, count] of Object.entries(ACTION_COUNTS)) {
+      const actionType = actStr as ActionType;
+      for (let i = 0; i < count; i++) {
+        deck.push({ id: `c${idCounter++}`, value: 0, kind: 'action', actionType });
+      }
+    }
+  }
+
   return deck;
 }
 
@@ -30,7 +54,37 @@ export function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-export function cardGradient(value: number): { bg: string; text: string; isDarkText: boolean } {
+export function actionLabel(actionType?: ActionType): { short: string; title: string; desc: string } {
+  switch (actionType) {
+    case 'swap_own':
+      return { short: '⇄ Propia', title: 'Cambio propio', desc: 'Intercambia 2 cartas de tu propio tablero.' };
+    case 'swap_opponent':
+      return { short: '⇄ Rival', title: 'Robo al rival', desc: 'Intercambia 1 carta tuya por 1 de un rival.' };
+    case 'swap_column':
+      return { short: '⇄ Columna', title: 'Cambio de columna', desc: 'Intercambia 1 columna tuya por 1 de un rival.' };
+    case 'peek':
+      return { short: '👁 Espiar', title: 'Espiar cartas', desc: 'Mira en secreto hasta 2 cartas boca abajo.' };
+    case 'draw_two':
+      return { short: '×2 Robar', title: 'Robar doble', desc: 'Roba 2 cartas del mazo, quédate 1 y descarta la otra.' };
+    case 'extra_turn':
+      return { short: '+1 Turno', title: 'Turno extra', desc: 'Al terminar este turno juegas otro turno seguido.' };
+    default:
+      return { short: '⚡ Acción', title: 'Carta de Acción', desc: 'Efecto especial.' };
+  }
+}
+
+export function cardGradient(cardOrValue: Card | number): { bg: string; text: string; isDarkText: boolean } {
+  if (typeof cardOrValue !== 'number') {
+    if (cardOrValue.kind === 'star') {
+      return { bg: 'from-amber-400 via-yellow-500 to-orange-500', text: 'text-slate-950', isDarkText: true };
+    }
+    if (cardOrValue.kind === 'action') {
+      return { bg: 'from-fuchsia-600 via-purple-700 to-indigo-900', text: 'text-white', isDarkText: false };
+    }
+    return cardGradient(cardOrValue.value);
+  }
+
+  const value = cardOrValue;
   if (value <= -1) {
     return { bg: 'from-indigo-700 to-purple-800', text: 'text-white', isDarkText: false };
   }

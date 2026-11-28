@@ -3,6 +3,7 @@ export type AILevel = 'easy' | 'hard' | 'adaptive';
 export interface GameConfig {
   playerCount: number; // 2, 3, 4
   aiLevel: AILevel;
+  withExpansion?: boolean;
 }
 
 export interface Player {
@@ -23,14 +24,27 @@ export type Stage =
   | 'choose_source'
   | 'must_place'
   | 'discard_then_flip'
+  | 'action_resolve'
   | 'bot_thinking'
   | 'idle';
 
 export type Direction = 'from_descarte' | 'from_mazo';
 
+export type CardKind = 'number' | 'star' | 'action';
+
+export type ActionType =
+  | 'swap_own'       // Intercambiar 2 cartas propias
+  | 'swap_opponent'  // Intercambiar 1 carta propia con 1 de un rival
+  | 'swap_column'    // Intercambiar 1 columna propia con 1 de un rival
+  | 'peek'           // Espiar hasta 2 cartas ocultas
+  | 'draw_two'       // Robar 2 del mazo y elegir 1
+  | 'extra_turn';    // Turno extra al acabar este
+
 export interface Card {
   id: string;
-  value: number;
+  value: number; // Para 'star' y 'action' vale 0 al puntuar si queda suelta
+  kind?: CardKind; // undefined = 'number' (retrocompatible con partidas clásicas)
+  actionType?: ActionType;
 }
 
 export interface Cell {
@@ -44,6 +58,15 @@ export type Board = Cell[]; // 12 cells (3 rows x 4 cols)
 export interface PendingDraw {
   card: Card;
   source: Direction;
+}
+
+export interface PendingActionState {
+  actionType: ActionType;
+  card: Card;
+  step: 'select_first' | 'select_second' | 'choose_drawn_two';
+  firstTarget?: { playerId: string; index: number };
+  peekedCards?: { playerId: string; index: number; card: Card }[];
+  drawnTwo?: Card[];
 }
 
 export interface BotHighlight {
@@ -66,17 +89,19 @@ export interface GameState {
   stage: Stage;
   currentPlayerIndex: number;
   pendingDraw: PendingDraw | null;
+  pendingAction?: PendingActionState | null;
+  extraTurnsRemaining?: number;
   lastAction: string;
   lastRoundTriggered: boolean;
   lastRoundCloser: string | null;
-  lastRoundRemaining: string[]; // who still plays
-  remainingFinalTurns: number; // explicit counter of final turns left
+  lastRoundRemaining: string[];
+  remainingFinalTurns: number;
   initialRevealed: Record<string, number>;
   pendingHighlight: BotHighlight | null;
   roundNumber: number;
-  turnOrder: string[]; // player ids in order
-  discardCounts: Record<number, number>; // value -> count seen on table
-  discardPulse: boolean; // brief animation flag when a card is discarded
+  turnOrder: string[];
+  discardCounts: Record<number, number>;
+  discardPulse: boolean;
   roundHistory?: RoundHistoryEntry[];
 }
 
@@ -101,11 +126,11 @@ export interface RoundResult {
 export interface AdaptiveMemory {
   level: number;
   roundsPlayed: number;
-  playerClosesEarly: number; // count
+  playerClosesEarly: number;
   playerClosesLate: number;
-  playerColumnFocus: number; // times player eliminated columns
-  stealThreshold: number; // dynamic: discard take threshold
-  closeRiskTolerance: number; // dynamic
+  playerColumnFocus: number;
+  stealThreshold: number;
+  closeRiskTolerance: number;
   gamesPlayed: number;
 }
 

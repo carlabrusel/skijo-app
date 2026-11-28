@@ -8,9 +8,18 @@ interface OpponentPanelProps {
   isCurrentTurn: boolean;
   highlightIndex: number | null;
   cardSize: 'opp' | 'opp-sm';
+  onOpponentCellClick?: (playerId: string, index: number) => void;
+  opponentCellClickable?: (playerId: string, index: number) => boolean;
 }
 
-function OpponentPanel({ player, isCurrentTurn, highlightIndex, cardSize }: OpponentPanelProps) {
+function OpponentPanel({
+  player,
+  isCurrentTurn,
+  highlightIndex,
+  cardSize,
+  onOpponentCellClick,
+  opponentCellClickable,
+}: OpponentPanelProps) {
   const score = getVisibleScore(player.board);
   return (
     <div className={`flex flex-col items-center rounded-xl p-1.5 transition-all duration-300
@@ -32,6 +41,9 @@ function OpponentPanel({ player, isCurrentTurn, highlightIndex, cardSize }: Oppo
       <BoardGrid
         board={player.board}
         size={cardSize}
+        onCellClick={onOpponentCellClick ? (i) => onOpponentCellClick(player.id, i) : undefined}
+        clickablePredicate={opponentCellClickable ? (i) => opponentCellClickable(player.id, i) : undefined}
+        highlightPredicate={opponentCellClickable ? (i) => opponentCellClickable(player.id, i) : undefined}
         highlightIndex={highlightIndex}
         activeTurn={isCurrentTurn}
       />
@@ -41,10 +53,11 @@ function OpponentPanel({ player, isCurrentTurn, highlightIndex, cardSize }: Oppo
 
 interface OpponentsBarProps {
   state: GameState;
+  onOpponentCellClick?: (playerId: string, index: number) => void;
+  opponentCellClickable?: (playerId: string, index: number) => boolean;
 }
 
-export function OpponentsBar({ state }: OpponentsBarProps) {
-  // App.tsx coloca siempre al jugador local en index 0, así que los rivales son todos los demás (bots y amigos online)
+export function OpponentsBar({ state, onOpponentCellClick, opponentCellClickable }: OpponentsBarProps) {
   const opponents = state.players.slice(1);
   const currentId = state.players[state.currentPlayerIndex]?.id;
   const cardSize: 'opp' | 'opp-sm' = opponents.length > 1 ? 'opp-sm' : 'opp';
@@ -58,6 +71,8 @@ export function OpponentsBar({ state }: OpponentsBarProps) {
           isCurrentTurn={currentId === opp.id}
           highlightIndex={state.pendingHighlight?.player === opp.id ? state.pendingHighlight.index : null}
           cardSize={cardSize}
+          onOpponentCellClick={onOpponentCellClick}
+          opponentCellClickable={opponentCellClickable}
         />
       ))}
     </div>

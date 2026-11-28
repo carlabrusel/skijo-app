@@ -17,12 +17,26 @@ export function RulesModal({ open, onClose }: { open: boolean; onClose: () => vo
           <p><span className="font-semibold text-emerald-400">Preparación:</span> 12 cartas boca abajo en cuadrícula 3×4. Voltea 2 al iniciar. Empieza quien tenga la suma más alta.</p>
           <p><span className="font-semibold text-emerald-400">Turno:</span> Coge del descarte o roba del mazo.</p>
           <ul className="ml-4 list-disc space-y-1 text-slate-300">
-            <li>Del descarte: intercámbiala por una carta de tu tablero.</li>
-            <li>Del mazo: colócala en tu tablero, o descártala y voltea una carta oculta.</li>
+            <li>Del descarte: intercámbiala por una carta de tu tablero (no se pueden coger cartas de Acción del descarte).</li>
+            <li>Del mazo: colócala en tu tablero, descártala y voltea una oculta, o activa su Acción.</li>
           </ul>
           <p><span className="font-semibold text-emerald-400">Columnas:</span> Si 3 cartas de una columna tienen el mismo valor y están boca arriba, ¡se eliminan!</p>
           <p><span className="font-semibold text-emerald-400">Fin de ronda:</span> Cuando un jugador tiene todo boca arriba. Los demás juegan un último turno cada uno.</p>
           <p><span className="font-semibold text-emerald-400">Duplicar:</span> Si cierras la ronda pero no tienes la puntuación más baja que todos, ¡tus puntos se duplican!</p>
+
+          <div className="pt-2 border-t border-slate-800">
+            <p className="font-semibold text-fuchsia-300 mb-1.5">Expansión Skyjo Action (opcional):</p>
+            <ul className="ml-4 list-disc space-y-1 text-xs text-slate-300">
+              <li><span className="font-bold text-amber-300">★ Estrella (Comodín):</span> Adoptan el valor de sus compañeras de columna para cerrar un trío de 3 iguales. Si acaban sueltas valen 0 puntos.</li>
+              <li><span className="font-bold text-fuchsia-300">⚡ ⇄ Propia:</span> Intercambia 2 cartas de tu propio tablero.</li>
+              <li><span className="font-bold text-fuchsia-300">⚡ ⇄ Rival:</span> Intercambia 1 carta tuya por 1 de un rival.</li>
+              <li><span className="font-bold text-fuchsia-300">⚡ ⇄ Columna:</span> Intercambia 1 columna tuya por 1 de un rival.</li>
+              <li><span className="font-bold text-fuchsia-300">⚡ 👁 Espiar:</span> Mira en secreto hasta 2 cartas boca abajo.</li>
+              <li><span className="font-bold text-fuchsia-300">⚡ ×2 Robar:</span> Roba 2 cartas del mazo, quédate 1 y descarta la otra.</li>
+              <li><span className="font-bold text-fuchsia-300">⚡ +1 Turno:</span> Juega otro turno seguido al acabar este.</li>
+            </ul>
+          </div>
+
           <div className="pt-2">
             <p className="font-semibold text-emerald-400 mb-1">Colores:</p>
             <div className="grid grid-cols-2 gap-1.5 text-xs">

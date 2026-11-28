@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   Users, Brain, Zap, RotateCcw, Sparkles, Target, Globe,
-  Copy, Check, Play, LogIn, Plus, Bot, Loader2, ArrowLeft, Share2,
+  Copy, Check, Play, LogIn, Plus, Bot, Loader2, ArrowLeft, Share2, Star,
 } from 'lucide-react';
 import { AILevel, AdaptiveMemory } from '@/game/types';
 import {
@@ -15,7 +15,7 @@ import {
 
 interface SetupModalProps {
   open: boolean;
-  onStart: (playerCount: number, aiLevel: AILevel) => void;
+  onStart: (playerCount: number, aiLevel: AILevel, withExpansion: boolean) => void;
   onStartOnline: (room: OnlineRoomRow, myPlayerId: string, fillWithBots: boolean) => void;
   onJoinStartedOnline: (room: OnlineRoomRow, myPlayerId: string) => void;
   memory: AdaptiveMemory;
@@ -49,6 +49,7 @@ export function SetupModal({
   const [mode, setMode] = useState<'solo' | 'online'>('solo');
   const [playerCount, setPlayerCount] = useState(2);
   const [aiLevel, setAiLevel] = useState<AILevel>('hard');
+  const [withExpansion, setWithExpansion] = useState(false);
 
   const [myId] = useState(() => getOrCreateClientId());
   const [playerName, setPlayerName] = useState(() => localStorage.getItem('skyjo_player_name') || '');
@@ -60,7 +61,6 @@ export function SetupModal({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Recupera invitación por URL o reconecta automáticamente a la sala si iOS recargó la pestaña al volver de WhatsApp
   useEffect(() => {
     if (!open) return;
 
@@ -98,7 +98,6 @@ export function SetupModal({
     }
   }, [open, myId, room, onJoinStartedOnline]);
 
-  // Refresca la sala tanto por intervalo como al volver de WhatsApp (visibilitychange)
   useEffect(() => {
     if (!open || !room) return;
     let active = true;
@@ -207,7 +206,6 @@ export function SetupModal({
     sessionStorage.setItem(LOBBY_STORAGE_KEY, room.code);
     const text = `¡Únete a mi partida de Skyjo! Código: ${room.code}`;
 
-    // En iOS / Android abre el menú nativo para enviar por WhatsApp sin abandonar ni dejar en blanco la web
     if (navigator.share) {
       try {
         await navigator.share({
@@ -283,7 +281,7 @@ export function SetupModal({
                     <button
                       key={n}
                       onClick={() => setPlayerCount(n)}
-                      className={`py-2.5 rounded-lg font-semibold text-sm transition-all border-2 ${
+                      className={`py-2 rounded-lg font-semibold text-sm transition-all border-2 ${
                         playerCount === n
                           ? 'bg-emerald-600 border-emerald-400 text-white shadow-lg shadow-emerald-600/30'
                           : 'bg-slate-700/50 border-slate-600 text-slate-300 hover:border-slate-500'
@@ -293,9 +291,41 @@ export function SetupModal({
                     </button>
                   ))}
                 </div>
-                <p className="text-xs text-slate-500 mt-1.5">
+                <p className="text-xs text-slate-500 mt-1">
                   {playerCount === 2 ? 'Tú vs 1 bot' : `Tú vs ${playerCount - 1} bots`}
                 </p>
+              </div>
+
+              <div>
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-200 mb-2">
+                  <Star size={16} className="text-amber-400" /> Modo de mazo
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setWithExpansion(false)}
+                    className={`p-2.5 rounded-lg border-2 text-left transition-all ${
+                      !withExpansion
+                        ? 'border-emerald-400 bg-emerald-900/30 text-white'
+                        : 'border-slate-600 bg-slate-700/30 text-slate-300 hover:border-slate-500'
+                    }`}
+                  >
+                    <p className="font-bold text-xs">Clásico</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">150 cartas normales</p>
+                  </button>
+                  <button
+                    onClick={() => setWithExpansion(true)}
+                    className={`p-2.5 rounded-lg border-2 text-left transition-all ${
+                      withExpansion
+                        ? 'border-fuchsia-400 bg-fuchsia-950/40 text-white'
+                        : 'border-slate-600 bg-slate-700/30 text-slate-300 hover:border-slate-500'
+                    }`}
+                  >
+                    <p className="font-bold text-xs flex items-center gap-1">
+                      Con Expansión <span className="text-[9px] bg-fuchsia-500/30 text-fuchsia-200 px-1.5 rounded">Action</span>
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">+ Estrellas y Acciones</p>
+                  </button>
+                </div>
               </div>
 
               <div>
@@ -305,7 +335,7 @@ export function SetupModal({
                 <div className="space-y-2">
                   <button
                     onClick={() => setAiLevel('easy')}
-                    className={`w-full text-left p-3 rounded-lg border-2 transition-all ${
+                    className={`w-full text-left p-2.5 rounded-lg border-2 transition-all ${
                       aiLevel === 'easy' ? 'border-emerald-400 bg-emerald-900/30' : 'border-slate-600 bg-slate-700/30 hover:border-slate-500'
                     }`}
                   >
@@ -313,11 +343,11 @@ export function SetupModal({
                       <Sparkles size={15} className={aiLevel === 'easy' ? 'text-emerald-400' : 'text-slate-400'} />
                       <span className="font-semibold text-sm text-white">Fácil (Casual)</span>
                     </div>
-                    <p className="text-xs text-slate-400 mt-0.5 ml-7">Juega relajado, a veces cierra sin calcular.</p>
+                    <p className="text-xs text-slate-400 mt-0.5 ml-6">Juega relajado, a veces cierra sin calcular.</p>
                   </button>
                   <button
                     onClick={() => setAiLevel('hard')}
-                    className={`w-full text-left p-3 rounded-lg border-2 transition-all ${
+                    className={`w-full text-left p-2.5 rounded-lg border-2 transition-all ${
                       aiLevel === 'hard' ? 'border-emerald-400 bg-emerald-900/30' : 'border-slate-600 bg-slate-700/30 hover:border-slate-500'
                     }`}
                   >
@@ -325,11 +355,11 @@ export function SetupModal({
                       <Target size={15} className={aiLevel === 'hard' ? 'text-emerald-400' : 'text-slate-400'} />
                       <span className="font-semibold text-sm text-white">Difícil (Experto)</span>
                     </div>
-                    <p className="text-xs text-slate-400 mt-0.5 ml-7">Cuenta cartas y calcula riesgo contra todos.</p>
+                    <p className="text-xs text-slate-400 mt-0.5 ml-6">Cuenta cartas, calcula riesgo y aprovecha la expansión.</p>
                   </button>
                   <button
                     onClick={() => setAiLevel('adaptive')}
-                    className={`w-full text-left p-3 rounded-lg border-2 transition-all ${
+                    className={`w-full text-left p-2.5 rounded-lg border-2 transition-all ${
                       aiLevel === 'adaptive' ? 'border-emerald-400 bg-emerald-900/30' : 'border-slate-600 bg-slate-700/30 hover:border-slate-500'
                     }`}
                   >
@@ -342,7 +372,7 @@ export function SetupModal({
                         Nv. {memory.level}
                       </span>
                     </div>
-                    <p className="text-xs text-slate-400 mt-0.5 ml-7">Se adapta a tu estilo. Guarda progreso en el dispositivo.</p>
+                    <p className="text-xs text-slate-400 mt-0.5 ml-6">Se adapta a tu estilo. Guarda progreso en el dispositivo.</p>
                   </button>
                 </div>
               </div>
@@ -360,7 +390,7 @@ export function SetupModal({
               )}
 
               <button
-                onClick={() => onStart(playerCount, aiLevel)}
+                onClick={() => onStart(playerCount, aiLevel, withExpansion)}
                 className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-600/30"
               >
                 Empezar partida

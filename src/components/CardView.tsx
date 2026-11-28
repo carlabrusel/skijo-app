@@ -1,5 +1,5 @@
 import { Card } from '@/game/types';
-import { cardGradient } from '@/game/deck';
+import { cardGradient, actionLabel } from '@/game/deck';
 
 interface CardViewProps {
   card: Card | null;
@@ -36,8 +36,7 @@ export function CardView({ card, revealed, eliminated, onClick, highlighted, act
     return (
       <button
         onClick={onClick}
-        className={`${dims} relative rounded-lg border-2 border-white shadow-md transition-all duration-300 overflow-hidden
-          ${highlighted ? 'ring-2 ring-emerald-400 scale-[1.03] shadow-emerald-400/40' : ''}
+        className={`${dims} relative rounded-lg border-2 border-white shadow-md transition-all duration-300 overflow-hidden${highlighted ? 'ring-2 ring-emerald-400 scale-[1.03] shadow-emerald-400/40' : ''}
           ${activeTurn ? 'ring-2 ring-amber-400/70' : ''}
           ${onClick ? 'cursor-pointer hover:scale-[1.03] active:scale-95' : 'cursor-default'}
           ${dimmed ? 'opacity-50' : ''}
@@ -70,32 +69,42 @@ export function CardView({ card, revealed, eliminated, onClick, highlighted, act
     );
   }
 
-  const c = cardGradient(card.value);
+  const c = cardGradient(card);
+  const isStar = card.kind === 'star';
+  const isAction = card.kind === 'action';
+  const mainLabel = isStar ? '★' : isAction ? '⚡' : String(card.value);
+  const cornerLabel = isStar ? '★' : isAction ? '⚡' : String(card.value);
+  const actionMeta = isAction ? actionLabel(card.actionType) : null;
+
   return (
     <button
       onClick={onClick}
-      className={`${dims} relative rounded-lg border-2 border-white shadow-md transition-all duration-300 bg-gradient-to-br ${c.bg}
-        ${highlighted ? 'ring-2 ring-emerald-400 scale-[1.03] shadow-emerald-400/40' : ''}
+      className={`${dims} relative rounded-lg border-2 border-white shadow-md transition-all duration-300 bg-gradient-to-br ${c.bg}${highlighted ? 'ring-2 ring-emerald-400 scale-[1.03] shadow-emerald-400/40' : ''}
         ${activeTurn ? 'ring-2 ring-amber-400/70' : ''}
         ${onClick ? 'cursor-pointer hover:scale-[1.03] active:scale-95' : 'cursor-default'}
         ${dimmed ? 'opacity-50' : ''}
-        flex items-center justify-center font-extrabold ${c.text}
+        flex flex-col items-center justify-center font-extrabold ${c.text} px-0.5
       `}
     >
       <span className="drop-shadow-md leading-none" style={{ textShadow: c.isDarkText ? '0 1px 2px rgba(255,255,255,0.4)' : '0 1px 3px rgba(0,0,0,0.4)' }}>
-        {card.value}
+        {mainLabel}
       </span>
+      {actionMeta && size !== 'opp-sm' && (
+        <span className="text-[7px] leading-tight font-bold uppercase tracking-tighter text-fuchsia-100 mt-0.5 truncate max-w-full">
+          {actionMeta.short.replace(/^[^\s]+\s/, '')}
+        </span>
+      )}
       <span
         className={`absolute top-0.5 left-1 ${cornerSize} font-bold opacity-80`}
         style={{ textShadow: c.isDarkText ? '0 1px 1px rgba(255,255,255,0.3)' : '0 1px 1px rgba(0,0,0,0.3)' }}
       >
-        {card.value}
+        {cornerLabel}
       </span>
       <span
         className={`absolute bottom-0.5 right-1 ${cornerSize} font-bold opacity-80 rotate-180`}
         style={{ textShadow: c.isDarkText ? '0 1px 1px rgba(255,255,255,0.3)' : '0 1px 1px rgba(0,0,0,0.3)' }}
       >
-        {card.value}
+        {cornerLabel}
       </span>
     </button>
   );

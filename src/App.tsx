@@ -7,7 +7,7 @@ import { CardView } from '@/components/CardView';
 import { SetupModal } from '@/components/SetupModal';
 import { RulesModal, HistoryModal, RoundModal, GameOverModal } from '@/components/Modals';
 import { getVisibleScore } from '@/game/board';
-import { Layers, Trash2, Hand, ArrowDownToLine, User, AlertTriangle } from 'lucide-react';
+import { Layers, Trash2, Hand, ArrowDownToLine, User, AlertTriangle, Zap, Check } from 'lucide-react';
 
 export default function App() {
   const game = useSkyjo();
@@ -24,7 +24,9 @@ export default function App() {
       <>
         <SetupModal
           open={game.setupOpen || !state}
-          onStart={(playerCount, aiLevel) => game.startGame({ playerCount, aiLevel })}
+          onStart={(playerCount, aiLevel, withExpansion) =>
+            game.startGame({ playerCount, aiLevel, withExpansion })
+          }
           onStartOnline={game.startOnlineGame}
           onJoinStartedOnline={game.joinStartedOnlineGame}
           memory={game.memory}
@@ -38,39 +40,70 @@ export default function App() {
   const isPlayerTurn = state.players[state.currentPlayerIndex]?.id === localPlayerId;
   const isInitialReveal = state.phase === 'reveal_initial';
   const isPlaying = state.phase === 'playing';
+  const discardTop = state.discard[0] ?? null;
+  const canTakeDiscard = Boolean(discardTop && discardTop.kind !== 'action');
+
   const canChooseSource = isPlaying && isPlayerTurn && state.stage === 'choose_source';
   const mustPlace = isPlaying && isPlayerTurn && state.stage === 'must_place';
+  const drawnIsAction = Boolean(mustPlace && state.pendingDraw?.card.kind === 'action');
   const discardThenFlip = isPlaying && isPlayerTurn && state.stage === 'discard_then_flip';
+  const resolvingAction = isPlaying && isPlayerTurn && state.stage === 'action_resolve';
   const botThinking = isPlaying && !isPlayerTurn;
 
+  const pa = state.pendingAction;
+  const peekedCount = pa?.peekedCards?.length ?? 0;
+
   const playerCellClickable = (i: number) => {
+    const c = player.board[i];
+    if (!c || c.eliminated || !c.card) return false;
+
     if (isInitialReveal && (state.initialRevealed[localPlayerId] ?? 0) < 2) {
-      const c = player.board[i];
-      return !c.revealed && !c.eliminated && !!c.card;
+      return !c.revealed;
     }
-    if (mustPlace) return true;
-    if (discardThenFlip) {
-      const c = player.board[i];
-      return !c.revealed && !c.eliminated && !!c.card;
+    if (mustPlace && !drawnIsAction) return true;
+    if (discardThenFlip) return !c.revealed;
+    if (resolvingAction && pa) {
+      if (pa.actionType === 'peek') {
+        const alreadyPeeked = pa.peekedCards?.some(pk => pk.playerId === localPlayerId && pk.index === i);
+        return !c.revealed && peekedCount < 2 && !alreadyPeeked;
+      }
+      if (pa.actionType === 'swap_own') return true;
+      if (pa.actionType === 'swap_opponent' || pa.actionType === 'swap_column') {
+        return pa.step === 'select_first';
+      }
+    }
+    return false;
+  };
+
+  const opponentCellClickable = (oppId: string, i: number) => {
+    if (!resolvingAction || !pa) return false;
+    const opp = state.players.find(p => p.id === oppId);
+    const c = opp?.board[i];
+    if (!c || c.eliminated || !c.card) return false;
+
+    if (pa.actionType === 'peek') {
+      const alreadyPeeked = pa.peekedCards?.some(pk => pk.playerId === oppId && pk.index === i);
+      return !c.revealed && peekedCount < 2 && !alreadyPeeked;
+    }
+    if ((pa.actionType === 'swap_opponent' || pa.actionType === 'swap_column') && pa.step === 'select_second') {
+      return true;
     }
     return false;
   };
 
   const onPlayerCellClick = (i: number) => {
     if (isInitialReveal) game.revealInitialCard(i);
-    else if (mustPlace) game.playerPlaceCard(i);
+    else if (mustPlace && !drawnIsAction) game.playerPlaceCard(i);
     else if (discardThenFlip) game.playerFlipHidden(i);
+    else if (resolvingAction) game.playerResolveActionTarget(localPlayerId, i);
   };
 
   const playerHighlight = (i: number) => {
-    if (isInitialReveal && (state.initialRevealed[localPlayerId] ?? 0) < 2) {
-      const c = player.board[i];
-      return !c.revealed && !c.eliminated && !!c.card;
-    }
-    if (discardThenFlip) {
-      const c = player.board[i];
-      return !c.revealed && !c.eliminated && !!c.card;
-    }
+    const c = player.board[i];
+    if (!c || c.eliminated || !c.card) return false;
+    if (isInitialReveal && (state.initialRevealed[localPlayerId] ?? 0) < 2) return !c.revealed;
+    if (discardThenFlip) return !c.revealed;
+    if (resolvingAction) return playerCellClickable(i);
     return false;
   };
 
@@ -78,7 +111,6 @@ export default function App() {
     state.pendingHighlight?.player === localPlayerId ? state.pendingHighlight.index : null;
 
   const deckEmpty = state.deck.length === 0;
-  const discardTop = state.discard[0] ?? null;
   const centerCardClass = 'h-[8dvh] max-h-16 aspect-[2/3]';
 
   const currentActivePlayerId = state.players[state.currentPlayerIndex]?.id;
@@ -117,99 +149,148 @@ export default function App() {
             <AlertTriangle size={12} /> ¡Última ronda!
           </div>
         )}
-        <OpponentsBar state={reorderedState} />
+        <OpponentsBar
+          state={reorderedState}
+          onOpponentCellClick={resolvingAction ? game.playerResolveActionTarget : undefined}
+          opponentCellClickable={resolvingAction ? opponentCellClickable : undefined}
+        />
       </div>
 
-      {/* 3. Zona central: mensaje + Mazo / Descarte / Mano + hueco reservado para el botón Descartar */}
+      {/* 3. Zona central: mensaje + Mazo / Descarte / Mano + botones de acción */}
       <div className="shrink-0 flex flex-col items-center justify-center gap-1.5 my-auto z-10">
         <p
           className={`text-xs text-center px-3 py-0.5 rounded-full bg-slate-900/80 font-semibold leading-snug max-w-full ${
-            botThinking ? 'text-amber-300' : isPlayerTurn ? 'text-emerald-300' : 'text-slate-300'
+            resolvingAction || drawnIsAction
+              ? 'text-fuchsia-300'
+              : botThinking
+                ? 'text-amber-300'
+                : isPlayerTurn
+                  ? 'text-emerald-300'
+                  : 'text-slate-300'
           }`}
         >
           {state.lastAction}
         </p>
 
-        <div className="flex items-end justify-center gap-4 sm:gap-5">
-          <div className="flex flex-col items-center gap-0.5">
-            <button
-              onClick={canChooseSource ? game.playerDrawDeck : undefined}
-              className={`relative ${canChooseSource ? 'cursor-pointer' : 'cursor-default'}`}
-              disabled={!canChooseSource || deckEmpty}
-            >
-              <div
-                className={`${centerCardClass} rounded-lg border-2 border-white shadow-md transition-all duration-300 relative overflow-hidden ${
-                  canChooseSource ? 'ring-4 ring-emerald-400/60 hover:scale-105 active:scale-95 shadow-emerald-400/30' : ''
-                }`}
-                style={{ background: 'conic-gradient(from 45deg, #1e3a8a, #059669, #f59e0b, #dc2626, #7c3aed, #1e3a8a)' }}
+        {resolvingAction && pa?.actionType === 'draw_two' && pa.drawnTwo ? (
+          <div className="flex items-center justify-center gap-4 py-1">
+            {pa.drawnTwo.map((c, idx) => (
+              <div key={c.id} className="flex flex-col items-center gap-1">
+                <CardView
+                  card={c}
+                  revealed={true}
+                  size="lg"
+                  highlighted={true}
+                  onClick={() => game.playerChooseDrawnTwo(idx)}
+                />
+                <span className="text-[10px] text-fuchsia-300 font-bold">Elegir {idx + 1}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-end justify-center gap-4 sm:gap-5">
+            <div className="flex flex-col items-center gap-0.5">
+              <button
+                onClick={canChooseSource ? game.playerDrawDeck : undefined}
+                className={`relative ${canChooseSource ? 'cursor-pointer' : 'cursor-default'}`}
+                disabled={!canChooseSource || deckEmpty}
               >
                 <div
-                  className="absolute inset-0 opacity-30"
-                  style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, transparent 30%, rgba(0,0,0,0.5) 100%)' }}
-                />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <Layers size={18} className="text-white/70" />
-                </div>
-              </div>
-              <span className="absolute -bottom-1 -right-1 bg-slate-800 text-slate-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-slate-600">
-                {state.deck.length}
-              </span>
-            </button>
-            <span className="text-[9px] text-slate-400 uppercase tracking-wide">Mazo</span>
-          </div>
-
-          <div className="flex flex-col items-center gap-0.5">
-            <div
-              key={discardTop ? discardTop.id : 'empty-discard'}
-              className={`relative rounded-lg ${discardTop && state.roundNumber > 0 ? 'animate-discard-halo' : ''}`}
-            >
-              {discardTop ? (
-                <div className="animate-discard-drop">
-                  <CardView
-                    card={discardTop}
-                    revealed={true}
-                    size="lg"
-                    onClick={canChooseSource ? game.playerTakeDiscard : undefined}
-                    highlighted={canChooseSource}
+                  className={`${centerCardClass} rounded-lg border-2 border-white shadow-md transition-all duration-300 relative overflow-hidden ${
+                    canChooseSource ? 'ring-4 ring-emerald-400/60 hover:scale-105 active:scale-95 shadow-emerald-400/30' : ''
+                  }`}
+                  style={{ background: 'conic-gradient(from 45deg, #1e3a8a, #059669, #f59e0b, #dc2626, #7c3aed, #1e3a8a)' }}
+                >
+                  <div
+                    className="absolute inset-0 opacity-30"
+                    style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, transparent 30%, rgba(0,0,0,0.5) 100%)' }}
                   />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Layers size={18} className="text-white/70" />
+                  </div>
+                </div>
+                <span className="absolute -bottom-1 -right-1 bg-slate-800 text-slate-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-slate-600">
+                  {state.deck.length}
+                </span>
+              </button>
+              <span className="text-[9px] text-slate-400 uppercase tracking-wide">Mazo</span>
+            </div>
+
+            <div className="flex flex-col items-center gap-0.5">
+              <div
+                key={discardTop ? discardTop.id : 'empty-discard'}
+                className={`relative rounded-lg ${discardTop && state.roundNumber > 0 ? 'animate-discard-halo' : ''}`}
+              >
+                {discardTop ? (
+                  <div className="animate-discard-drop">
+                    <CardView
+                      card={discardTop}
+                      revealed={true}
+                      size="lg"
+                      onClick={canChooseSource && canTakeDiscard ? game.playerTakeDiscard : undefined}
+                      highlighted={canChooseSource && canTakeDiscard}
+                    />
+                  </div>
+                ) : (
+                  <div className={`${centerCardClass} rounded-lg border-2 border-dashed border-slate-700 flex items-center justify-center`}>
+                    <Trash2 size={16} className="text-slate-600" />
+                  </div>
+                )}
+              </div>
+              <span className="text-[9px] text-slate-400 uppercase tracking-wide">Descarte</span>
+            </div>
+
+            <div className="flex flex-col items-center gap-0.5">
+              {state.pendingDraw ? (
+                <div className="animate-card-appear">
+                  <CardView card={state.pendingDraw.card} revealed={true} size="lg" highlighted={true} />
                 </div>
               ) : (
-                <div className={`${centerCardClass} rounded-lg border-2 border-dashed border-slate-700 flex items-center justify-center`}>
-                  <Trash2 size={16} className="text-slate-600" />
+                <div className={`${centerCardClass} rounded-lg border-2 border-dashed border-slate-800/50 flex items-center justify-center`}>
+                  <Hand size={16} className="text-slate-700" />
                 </div>
               )}
+              <span
+                className={`text-[9px] uppercase tracking-wide flex items-center gap-0.5 transition-colors ${
+                  state.pendingDraw ? 'text-emerald-400 font-semibold' : 'text-slate-500'
+                }`}
+              >
+                {state.pendingDraw && <Hand size={9} />} Mano
+              </span>
             </div>
-            <span className="text-[9px] text-slate-400 uppercase tracking-wide">Descarte</span>
           </div>
+        )}
 
-          <div className="flex flex-col items-center gap-0.5">
-            {state.pendingDraw ? (
-              <div className="animate-card-appear">
-                <CardView card={state.pendingDraw.card} revealed={true} size="lg" highlighted={true} />
-              </div>
-            ) : (
-              <div className={`${centerCardClass} rounded-lg border-2 border-dashed border-slate-800/50 flex items-center justify-center`}>
-                <Hand size={16} className="text-slate-700" />
-              </div>
-            )}
-            <span
-              className={`text-[9px] uppercase tracking-wide flex items-center gap-0.5 transition-colors ${
-                state.pendingDraw ? 'text-emerald-400 font-semibold' : 'text-slate-500'
+        {/* Altura fija reservada para controles de mano / acción */}
+        <div className="h-7 flex items-center justify-center gap-2">
+          {mustPlace && state.pendingDraw && (
+            <>
+              {drawnIsAction && (
+                <button
+                  onClick={game.playerUseActionCard}
+                  className="px-3.5 py-1 bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-xs font-bold rounded-lg flex items-center gap-1 ring-2 ring-fuchsia-300/50 shadow-md"
+                >
+                  <Zap size={13} /> Usar Acción
+                </button>
+              )}
+              <button
+                onClick={game.playerDiscardDrawn}
+                className="px-3.5 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 ring-2 ring-amber-400/40 shadow-md"
+              >
+                <ArrowDownToLine size={13} /> {drawnIsAction ? 'Descartar' : 'Descartar robada'}
+              </button>
+            </>
+          )}
+          {resolvingAction && pa?.actionType !== 'draw_two' && (
+            <button
+              onClick={game.playerFinishOrCancelAction}
+              className={`px-3.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 border ${
+                pa?.actionType === 'peek' && peekedCount >= 2
+                  ? 'bg-fuchsia-600 hover:bg-fuchsia-500 text-white border-fuchsia-300 shadow-md'
+                  : 'bg-slate-700 hover:bg-slate-600 text-slate-200 border-slate-500'
               }`}
             >
-              {state.pendingDraw && <Hand size={9} />} Mano
-            </span>
-          </div>
-        </div>
-
-        {/* Altura fija reservada para el botón de descartar: nunca empujará ni pisará el tablero inferior */}
-        <div className="h-7 flex items-center justify-center">
-          {mustPlace && state.pendingDraw && (
-            <button
-              onClick={game.playerDiscardDrawn}
-              className="px-4 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 ring-2 ring-amber-400/40 shadow-md"
-            >
-              <ArrowDownToLine size={13} /> Descartar robada
+              <Check size={13} /> {pa?.actionType === 'peek' ? 'Listo, voltear carta' : 'Saltar acción'}
             </button>
           )}
         </div>

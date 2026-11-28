@@ -4,13 +4,13 @@ import {
   RoundResult, RoundPlayerResult, GameConfig, AdaptiveMemory,
   BOT_NAMES, BOT_IDS, PLAYER_ID, AILevel,
 } from '@/game/types';
-import { createDeck, shuffle } from '@/game/deck';
+import { createDeck, shuffle, actionLabel } from '@/game/deck';
 import {
   emptyBoard, dealCardsToBoard, allRevealed, getFullScore,
   findEliminableColumns, eliminateColumns,
   hiddenIndices, countEliminated,
 } from '@/game/board';
-import { decideBotMove, decideBotPlacement } from '@/game/bot';
+import { decideBotMove, decideBotPlacement, decideBotAction } from '@/game/bot';
 import { loadMemory, resetMemory, evolveMemory } from '@/game/memory';
 import {
   OnlineRoomRow,
@@ -42,15 +42,21 @@ function buildPlayers(config: GameConfig): Player[] {
 }
 
 function dealNewRound(state: SyncedGameState, isOnline = false): SyncedGameState {
-  const deck = shuffle(createDeck());
+  const withExpansion = Boolean(!isOnline && state.config.withExpansion);
+  const deck = shuffle(createDeck(withExpansion));
   const players = state.players.map(p => {
     const cards = deck.splice(0, 12);
     return { ...p, board: dealCardsToBoard(emptyBoard(), cards) };
   });
-  const firstDiscard = deck.shift()!;
+
+  let firstDiscardIdx = deck.findIndex(c => c.kind !== 'action');
+  if (firstDiscardIdx === -1) firstDiscardIdx = 0;
+  const [firstDiscard] = deck.splice(firstDiscardIdx, 1);
 
   const discardCounts: Record<number, number> = {};
-  if (firstDiscard) discardCounts[firstDiscard.value] = (discardCounts[firstDiscard.value] || 0) + 1;
+  if (firstDiscard && firstDiscard.kind === 'number') {
+    discardCounts[firstDiscard.value] = (discardCounts[firstDiscard.value] || 0) + 1;
+  }
 
   return {
     ...state,
@@ -61,6 +67,8 @@ function dealNewRound(state: SyncedGameState, isOnline = false): SyncedGameState
     stage: 'choose_source',
     currentPlayerIndex: 0,
     pendingDraw: null,
+    pendingAction: null,
+    extraTurnsRemaining: 0,
     lastAction: isOnline
       ? 'Voltead 2 cartas cada uno para empezar'
       : 'Voltea 2 de tus cartas para empezar',
@@ -88,6 +96,8 @@ function freshState(config: GameConfig, customPlayers?: Player[]): SyncedGameSta
     stage: 'choose_source',
     currentPlayerIndex: 0,
     pendingDraw: null,
+    pendingAction: null,
+    extraTurnsRemaining: 0,
     lastAction: '',
     lastRoundTriggered: false,
     lastRoundCloser: null,
@@ -106,10 +116,10 @@ function freshState(config: GameConfig, customPlayers?: Player[]): SyncedGameSta
 }
 
 function updateDiscardCounts(counts: Record<number, number>, card: Card): Record<number, number> {
+  if (card.kind && card.kind !== 'number') return counts;
   return { ...counts, [card.value]: (counts[card.value] || 0) + 1 };
 }
 
-// Mejora 1: fusiona el estado remoto con las cartas iniciales volteadas localmente para que nunca se pisen
 function mergeInitialRevealStates(
   local: SyncedGameState,
   remote: SyncedGameState,
@@ -131,7 +141,6 @@ function mergeInitialRevealStates(
   const localMyCount = localMe.board.filter(c => c.revealed).length;
   const remoteMyCount = remoteMe.board.filter(c => c.revealed).length;
 
-  // Si localmente tengo más cartas reveladas mías que lo que llegó de Supabase, conservar mi tablero
   if (localMyCount <= remoteMyCount) {
     return { merged: remote, needsRePush: false };
   }
@@ -156,7 +165,6 @@ function mergeInitialRevealStates(
     };
   }
 
-  // Si con mi jugada ya están todos listos, arrancar la partida directamente
   let finalPlayers = mergedPlayers;
   for (const p of finalPlayers) {
     if (!p.isBot) continue;
@@ -278,7 +286,6 @@ export function useSkyjo() {
     [roomCode, pushOnlineState]
   );
 
-  // Sincronización periódica con fusión segura en fase inicial
   useEffect(() => {
     if (!roomCode) return;
     let active = true;
@@ -371,7 +378,7 @@ export function useSkyjo() {
       }
 
       const initial = dealNewRound(
-        freshState({ playerCount: players.length, aiLevel: 'hard' }, players),
+        freshState({ playerCount: players.length, aiLevel: 'hard', withExpansion: false }, players),
         true
       );
       localRevRef.current = initial._rev ?? 1;
@@ -614,6 +621,8 @@ export function useSkyjo() {
         phase: 'end_routine',
         stage: 'choose_source',
         pendingDraw: null,
+        pendingAction: null,
+        extraTurnsRemaining: 0,
         pendingHighlight: null,
         roundHistory: updatedHistory,
         lastAction: '¡Ronda terminada! Revelando cartas...',
@@ -623,6 +632,20 @@ export function useSkyjo() {
   );
 
   const advanceToNextPlayer = useCallback((s: SyncedGameState): SyncedGameState => {
+    if ((s.extraTurnsRemaining ?? 0) > 0 && !s.lastRoundTriggered) {
+      const samePlayer = s.players[s.currentPlayerIndex];
+      return {
+        ...s,
+        extraTurnsRemaining: (s.extraTurnsRemaining ?? 1) - 1,
+        stage: samePlayer.isBot ? 'bot_thinking' : 'choose_source',
+        pendingDraw: null,
+        pendingAction: null,
+        lastAction: samePlayer.isBot
+          ? `${samePlayer.name} juega su turno extra...`
+          : '⚡ ¡Turno extra! Roba del mazo o coge del descarte',
+      };
+    }
+
     const curIdx = s.currentPlayerIndex;
     let nextIdx = (curIdx + 1) % s.turnOrder.length;
     if (s.lastRoundTriggered && s.lastRoundCloser && s.turnOrder[nextIdx] === s.lastRoundCloser) {
@@ -644,6 +667,7 @@ export function useSkyjo() {
             ? 'Tu turno: roba del mazo o coge del descarte'
             : `Turno de ${nextPlayer.name}`,
       pendingDraw: null,
+      pendingAction: null,
     };
   }, []);
 
@@ -656,6 +680,7 @@ export function useSkyjo() {
         const remaining = s.turnOrder.length - 1;
         const triggeredState: SyncedGameState = {
           ...s,
+          extraTurnsRemaining: 0,
           lastRoundTriggered: true,
           lastRoundCloser: actorId,
           lastRoundRemaining: s.turnOrder.filter(id => id !== actorId),
@@ -772,6 +797,7 @@ export function useSkyjo() {
       if (prev.stage !== 'choose_source') return prev;
       if (prev.discard.length === 0) return prev;
       const top = prev.discard[0];
+      if (top.kind === 'action') return prev;
       return {
         ...prev,
         pendingDraw: { card: top, source: 'from_descarte' },
@@ -790,12 +816,15 @@ export function useSkyjo() {
       const s = ensureDeck(prev);
       if (s.deck.length === 0) return prev;
       const drawn = s.deck[0];
+      const isAction = drawn.kind === 'action';
       return {
         ...s,
         deck: s.deck.slice(1),
         pendingDraw: { card: drawn, source: 'from_mazo' },
         stage: 'must_place',
-        lastAction: 'Robaste del mazo. Coloca en tu tablero o descarta.',
+        lastAction: isAction
+          ? `⚡ Robaste ${actionLabel(drawn.actionType).title}. Úsala o descártala.`
+          : 'Robaste del mazo. Coloca en tu tablero o descarta.',
       };
     });
   }, [applyLocalMutation, ensureDeck, localPlayerId]);
@@ -807,6 +836,8 @@ export function useSkyjo() {
         if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
         if (prev.stage !== 'must_place' || !prev.pendingDraw) return prev;
         const drawn = prev.pendingDraw.card;
+        if (drawn.kind === 'action') return prev;
+
         const player = prev.players[prev.currentPlayerIndex];
         const oldCard = player.board[index].card;
         const board = player.board.map((c, i) =>
@@ -835,6 +866,294 @@ export function useSkyjo() {
     },
     [applyLocalMutation, checkColumnEliminations, completeTurn, localPlayerId, triggerDiscardPulse]
   );
+
+  const playerUseActionCard = useCallback(() => {
+    applyLocalMutation(prev => {
+      if (prev.phase !== 'playing') return prev;
+      if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
+      if (prev.stage !== 'must_place' || !prev.pendingDraw) return prev;
+      const drawn = prev.pendingDraw.card;
+      if (drawn.kind !== 'action' || !drawn.actionType) return prev;
+
+      const act = drawn.actionType;
+      const discard = [drawn, ...prev.discard];
+
+      if (act === 'extra_turn') {
+        return {
+          ...prev,
+          discard,
+          pendingDraw: null,
+          pendingAction: null,
+          extraTurnsRemaining: (prev.extraTurnsRemaining ?? 0) + 1,
+          stage: 'discard_then_flip',
+          lastAction: '⚡ ¡Turno extra activado! Voltea 1 carta oculta para acabar este turno.',
+        };
+      }
+
+      if (act === 'draw_two') {
+        const s = ensureDeck(prev);
+        const card1 = s.deck[0];
+        const card2 = s.deck[1];
+        const drawnTwo = [card1, card2].filter(Boolean);
+        if (drawnTwo.length === 0) {
+          return {
+            ...s,
+            discard,
+            pendingDraw: null,
+            stage: 'discard_then_flip',
+            lastAction: 'No quedan cartas en el mazo. Voltea 1 carta oculta.',
+          };
+        }
+        return {
+          ...s,
+          deck: s.deck.slice(drawnTwo.length),
+          discard,
+          pendingDraw: null,
+          stage: 'action_resolve',
+          pendingAction: {
+            actionType: 'draw_two',
+            card: drawn,
+            step: 'choose_drawn_two',
+            drawnTwo,
+          },
+          lastAction: '⚡ Elige 1 de las 2 cartas robadas para quedártela:',
+        };
+      }
+
+      const instructionMap = {
+        swap_own: '⚡ Pulsa la 1ª carta de TU tablero que quieres mover:',
+        swap_opponent: '⚡ Pulsa la carta de TU tablero que quieres dar al rival:',
+        swap_column: '⚡ Pulsa cualquier carta de TU columna que quieres cambiar:',
+        peek: '⚡ Pulsa 2 cartas boca abajo (tuyas o de rivales) para espiarlas (0/2):',
+      };
+
+      return {
+        ...prev,
+        discard,
+        pendingDraw: null,
+        stage: 'action_resolve',
+        pendingAction: {
+          actionType: act,
+          card: drawn,
+          step: 'select_first',
+          peekedCards: [],
+        },
+        lastAction: instructionMap[act],
+      };
+    });
+  }, [applyLocalMutation, ensureDeck, localPlayerId]);
+
+  const playerChooseDrawnTwo = useCallback(
+    (chosenIndex: number) => {
+      applyLocalMutation(prev => {
+        const pa = prev.pendingAction;
+        if (prev.stage !== 'action_resolve' || !pa || pa.actionType !== 'draw_two' || !pa.drawnTwo) return prev;
+        const chosen = pa.drawnTwo[chosenIndex];
+        const other = pa.drawnTwo[chosenIndex === 0 ? 1 : 0];
+        if (!chosen) return prev;
+
+        const discard = other ? [other, ...prev.discard] : prev.discard;
+        const discardCounts = other ? updateDiscardCounts(prev.discardCounts, other) : prev.discardCounts;
+
+        return {
+          ...prev,
+          discard,
+          discardCounts,
+          pendingAction: null,
+          pendingDraw: { card: chosen, source: 'from_mazo' },
+          stage: 'must_place',
+          lastAction: chosen.kind === 'action'
+            ? `⚡ Elegiste ${actionLabel(chosen.actionType).title}. Úsala o descártala.`
+            : 'Coloca la carta elegida en tu tablero o descártala.',
+        };
+      });
+    },
+    [applyLocalMutation]
+  );
+
+  const playerResolveActionTarget = useCallback(
+    (targetPlayerId: string, cellIndex: number) => {
+      applyLocalMutation(prev => {
+        const pa = prev.pendingAction;
+        if (prev.phase !== 'playing' || prev.stage !== 'action_resolve' || !pa) return prev;
+        if (prev.players[prev.currentPlayerIndex].id !== localPlayerId) return prev;
+
+        const targetPlayer = prev.players.find(p => p.id === targetPlayerId);
+        if (!targetPlayer) return prev;
+        const targetCell = targetPlayer.board[cellIndex];
+        if (!targetCell || targetCell.eliminated || !targetCell.card) return prev;
+
+        // 1. PEEK (Espiar ESTRICTAMENTE hasta 2 cartas boca abajo)
+        if (pa.actionType === 'peek') {
+          if (targetCell.revealed) return prev;
+          const already = pa.peekedCards ?? [];
+          // Bloquea cualquier clic si ya ha mirado 2 cartas
+          if (already.length >= 2) return prev;
+          if (already.some(p => p.playerId === targetPlayerId && p.index === cellIndex)) return prev;
+
+          const nextPeeked = [...already, { playerId: targetPlayerId, index: cellIndex, card: targetCell.card }];
+          const cardLabel =
+            targetCell.card.kind === 'star'
+              ? '★ (Estrella)'
+              : targetCell.card.kind === 'action'
+                ? actionLabel(targetCell.card.actionType).short
+                : String(targetCell.card.value);
+
+          const anyMoreHidden = prev.players.some(p =>
+            p.board.some((c, i) => !c.eliminated && !c.revealed && !nextPeeked.some(pk => pk.playerId === p.id && pk.index === i))
+          );
+
+          if (nextPeeked.length >= 2 || !anyMoreHidden) {
+            return {
+              ...prev,
+              pendingAction: { ...pa, peekedCards: nextPeeked },
+              lastAction: `👁 (${nextPeeked.length}/2) ${targetPlayer.name}: ${cardLabel}. Pulsa "Listo, voltear carta".`,
+            };
+          }
+
+          return {
+            ...prev,
+            pendingAction: { ...pa, peekedCards: nextPeeked },
+            lastAction: `👁 (1/2) ${targetPlayer.name}: ${cardLabel}. Elige 1 carta más:`,
+          };
+        }
+
+        // 2. SWAP OWN
+        if (pa.actionType === 'swap_own') {
+          if (targetPlayerId !== localPlayerId) return prev;
+          if (pa.step === 'select_first') {
+            return {
+              ...prev,
+              pendingAction: { ...pa, step: 'select_second', firstTarget: { playerId: localPlayerId, index: cellIndex } },
+              lastAction: '⚡ Ahora pulsa la 2ª carta de TU tablero para intercambiarlas:',
+            };
+          }
+          if (pa.step === 'select_second' && pa.firstTarget) {
+            const idx1 = pa.firstTarget.index;
+            if (idx1 === cellIndex) return prev;
+            const me = prev.players.find(p => p.id === localPlayerId)!;
+            const newBoard = [...me.board];
+            const temp = newBoard[idx1];
+            newBoard[idx1] = newBoard[cellIndex];
+            newBoard[cellIndex] = temp;
+
+            let s: SyncedGameState = {
+              ...prev,
+              players: prev.players.map(p => (p.id === localPlayerId ? { ...p, board: newBoard } : p)),
+              pendingAction: null,
+              stage: 'choose_source',
+              lastAction: '⚡ Cartas intercambiadas en tu tablero',
+            };
+            s = checkColumnEliminations(s, localPlayerId);
+            return completeTurn(s, localPlayerId);
+          }
+        }
+
+        // 3. SWAP OPPONENT
+        if (pa.actionType === 'swap_opponent') {
+          if (pa.step === 'select_first') {
+            if (targetPlayerId !== localPlayerId) return prev;
+            return {
+              ...prev,
+              pendingAction: { ...pa, step: 'select_second', firstTarget: { playerId: localPlayerId, index: cellIndex } },
+              lastAction: '⚡ Ahora pulsa la carta de un RIVAL que quieres robarle:',
+            };
+          }
+          if (pa.step === 'select_second' && pa.firstTarget) {
+            if (targetPlayerId === localPlayerId) return prev;
+            const myIdx = pa.firstTarget.index;
+            const me = prev.players.find(p => p.id === localPlayerId)!;
+            const opp = targetPlayer;
+
+            const myNewBoard = [...me.board];
+            const oppNewBoard = [...opp.board];
+            const myCell = myNewBoard[myIdx];
+            const oppCell = oppNewBoard[cellIndex];
+            myNewBoard[myIdx] = oppCell;
+            oppNewBoard[cellIndex] = myCell;
+
+            let s: SyncedGameState = {
+              ...prev,
+              players: prev.players.map(p => {
+                if (p.id === localPlayerId) return { ...p, board: myNewBoard };
+                if (p.id === opp.id) return { ...p, board: oppNewBoard };
+                return p;
+              }),
+              pendingAction: null,
+              stage: 'choose_source',
+              lastAction: `⚡ Intercambiaste carta con ${opp.name}`,
+            };
+            s = checkColumnEliminations(s, localPlayerId);
+            s = checkColumnEliminations(s, opp.id);
+            return completeTurn(s, localPlayerId);
+          }
+        }
+
+        // 4. SWAP COLUMN
+        if (pa.actionType === 'swap_column') {
+          const clickedCol = cellIndex % 4;
+          const colCells = [clickedCol, clickedCol + 4, clickedCol + 8];
+          if (colCells.some(i => targetPlayer.board[i].eliminated)) return prev;
+
+          if (pa.step === 'select_first') {
+            if (targetPlayerId !== localPlayerId) return prev;
+            return {
+              ...prev,
+              pendingAction: { ...pa, step: 'select_second', firstTarget: { playerId: localPlayerId, index: clickedCol } },
+              lastAction: `⚡ Columna ${clickedCol + 1} elegida. Pulsa ahora una columna de un RIVAL:`,
+            };
+          }
+          if (pa.step === 'select_second' && pa.firstTarget) {
+            if (targetPlayerId === localPlayerId) return prev;
+            const myCol = pa.firstTarget.index;
+            const oppCol = clickedCol;
+            const me = prev.players.find(p => p.id === localPlayerId)!;
+            const opp = targetPlayer;
+
+            const myNewBoard = [...me.board];
+            const oppNewBoard = [...opp.board];
+            for (let row = 0; row < 3; row++) {
+              const mIdx = myCol + row * 4;
+              const oIdx = oppCol + row * 4;
+              const tmp = myNewBoard[mIdx];
+              myNewBoard[mIdx] = oppNewBoard[oIdx];
+              oppNewBoard[oIdx] = tmp;
+            }
+
+            let s: SyncedGameState = {
+              ...prev,
+              players: prev.players.map(p => {
+                if (p.id === localPlayerId) return { ...p, board: myNewBoard };
+                if (p.id === opp.id) return { ...p, board: oppNewBoard };
+                return p;
+              }),
+              pendingAction: null,
+              stage: 'choose_source',
+              lastAction: `⚡ Intercambiaste columna con ${opp.name}`,
+            };
+            s = checkColumnEliminations(s, localPlayerId);
+            s = checkColumnEliminations(s, opp.id);
+            return completeTurn(s, localPlayerId);
+          }
+        }
+
+        return prev;
+      });
+    },
+    [applyLocalMutation, checkColumnEliminations, completeTurn, localPlayerId]
+  );
+
+  const playerFinishOrCancelAction = useCallback(() => {
+    applyLocalMutation(prev => {
+      if (prev.stage !== 'action_resolve') return prev;
+      return {
+        ...prev,
+        pendingAction: null,
+        stage: 'discard_then_flip',
+        lastAction: 'Acción finalizada. Pulsa una carta boca abajo para voltearla.',
+      };
+    });
+  }, [applyLocalMutation]);
 
   const playerDiscardDrawn = useCallback(() => {
     applyLocalMutation(prev => {
@@ -962,7 +1281,7 @@ export function useSkyjo() {
           s = syncBotStep({ ...s, lastAction: `${bot.name} no pudo robar` });
           await sleep(400);
         } else {
-          const drawn = s.deck[0];
+          let drawn = s.deck[0];
           await sleep(pauseMs * 0.6);
           s = syncBotStep({
             ...s,
@@ -972,86 +1291,220 @@ export function useSkyjo() {
           });
           await sleep(pauseMs);
 
-          const placement = decideBotPlacement(
-            s.players[s.currentPlayerIndex].board,
-            drawn.value,
-            s,
-            level,
-            mem
-          );
-          await sleep(pauseMs * 0.4);
-
-          if (placement.place && placement.placeIndex !== null) {
-            const idx = placement.placeIndex;
+          if (drawn.kind === 'action') {
+            const actPlan = decideBotAction(s.players[s.currentPlayerIndex], drawn, s, level, mem);
             s = syncBotStep({
               ...s,
-              pendingHighlight: { player: bot.id, index: idx, action: 'place' },
-              lastAction: `${bot.name} coloca carta`,
-            });
-            await sleep(pauseMs);
-
-            const oldCard = s.players[s.currentPlayerIndex].board[idx].card;
-            const newBoard = s.players[s.currentPlayerIndex].board.map((c, i) =>
-              i === idx ? { card: drawn, revealed: true, eliminated: false } : c
-            );
-            let newDiscard = s.discard;
-            let discardCounts = s.discardCounts;
-            if (oldCard) {
-              newDiscard = [oldCard, ...newDiscard];
-              discardCounts = updateDiscardCounts(discardCounts, oldCard);
-            }
-            s = syncBotStep({
-              ...s,
-              players: s.players.map(p => (p.id === bot.id ? { ...p, board: newBoard } : p)),
-              discard: newDiscard,
-              discardCounts,
+              discard: [drawn, ...s.discard],
               pendingDraw: null,
-              pendingHighlight: { player: bot.id, index: idx, action: 'place' },
-              lastAction: `${bot.name} intercambia`,
+              lastAction: actPlan.useAction
+                ? `⚡ ${bot.name} usa ${actionLabel(drawn.actionType).title}`
+                : `${bot.name} descarta acción`,
             });
-            if (oldCard) triggerDiscardPulse();
+            await sleep(pauseMs * 0.8);
 
-            await sleep(pauseMs * 0.65);
-            const beforeElim = s.lastAction;
-            s = checkColumnEliminations(s, bot.id);
-            if (s.lastAction !== beforeElim) {
-              s = syncBotStep(s);
-              await sleep(750);
-            }
-          } else {
-            const newDiscard = [drawn, ...s.discard];
-            const discardCounts = updateDiscardCounts(s.discardCounts, drawn);
-            let newBoard = s.players[s.currentPlayerIndex].board;
-            if (placement.flipIndex !== null) {
-              const fi = placement.flipIndex;
+            if (actPlan.useAction && drawn.actionType === 'draw_two') {
+              s = ensureDeck(s);
+              const two = s.deck.slice(0, 2);
+              if (two.length > 0) {
+                s = { ...s, deck: s.deck.slice(two.length) };
+                const sorted = [...two].sort((a, b) => {
+                  const va = a.kind === 'star' ? -0.5 : a.kind === 'action' ? 99 : a.value;
+                  const vb = b.kind === 'star' ? -0.5 : b.kind === 'action' ? 99 : b.value;
+                  return va - vb;
+                });
+                drawn = sorted[0];
+                if (sorted[1]) {
+                  s = syncBotStep({
+                    ...s,
+                    discard: [sorted[1], ...s.discard],
+                    discardCounts: updateDiscardCounts(s.discardCounts, sorted[1]),
+                    pendingDraw: { card: drawn, source: 'from_mazo' },
+                    lastAction: `⚡ ${bot.name} elige una carta de las 2`,
+                  });
+                  await sleep(pauseMs * 0.7);
+                }
+              }
+            } else if (actPlan.useAction && drawn.actionType === 'swap_own' && actPlan.ownIndex !== undefined && actPlan.secondOwnIndex !== undefined) {
+              const curBot = s.players.find(p => p.id === bot.id)!;
+              const nb = [...curBot.board];
+              const tmp = nb[actPlan.ownIndex];
+              nb[actPlan.ownIndex] = nb[actPlan.secondOwnIndex];
+              nb[actPlan.secondOwnIndex] = tmp;
               s = syncBotStep({
                 ...s,
-                pendingHighlight: { player: bot.id, index: fi, action: 'flip' },
-                lastAction: `${bot.name} descarta y voltea`,
+                players: s.players.map(p => (p.id === bot.id ? { ...p, board: nb } : p)),
+                pendingHighlight: { player: bot.id, index: actPlan.secondOwnIndex, action: 'place' },
+                lastAction: `⚡ ${bot.name} reordena su tablero`,
+              });
+              await sleep(pauseMs * 0.7);
+              s = checkColumnEliminations(s, bot.id);
+              s = syncBotStep(s);
+              await sleep(300);
+              const cleanState: SyncedGameState = { ...s, pendingHighlight: null };
+              syncBotStep(completeTurn(cleanState, bot.id));
+              return;
+            } else if (actPlan.useAction && drawn.actionType === 'swap_opponent' && actPlan.ownIndex !== undefined && actPlan.targetPlayerId && actPlan.targetIndex !== undefined) {
+              const curBot = s.players.find(p => p.id === bot.id)!;
+              const opp = s.players.find(p => p.id === actPlan.targetPlayerId)!;
+              const bBoard = [...curBot.board];
+              const oBoard = [...opp.board];
+              const tmp = bBoard[actPlan.ownIndex];
+              bBoard[actPlan.ownIndex] = oBoard[actPlan.targetIndex];
+              oBoard[actPlan.targetIndex] = tmp;
+              s = syncBotStep({
+                ...s,
+                players: s.players.map(p => {
+                  if (p.id === bot.id) return { ...p, board: bBoard };
+                  if (p.id === opp.id) return { ...p, board: oBoard };
+                  return p;
+                }),
+                pendingHighlight: { player: opp.id, index: actPlan.targetIndex, action: 'place' },
+                lastAction: `⚡ ${bot.name} intercambia carta con ${opp.name}`,
+              });
+              await sleep(pauseMs * 0.8);
+              s = checkColumnEliminations(s, bot.id);
+              s = checkColumnEliminations(s, opp.id);
+              s = syncBotStep(s);
+              await sleep(300);
+              const cleanState: SyncedGameState = { ...s, pendingHighlight: null };
+              syncBotStep(completeTurn(cleanState, bot.id));
+              return;
+            } else if (actPlan.useAction && drawn.actionType === 'swap_column' && actPlan.ownCol !== undefined && actPlan.targetPlayerId && actPlan.targetCol !== undefined) {
+              const curBot = s.players.find(p => p.id === bot.id)!;
+              const opp = s.players.find(p => p.id === actPlan.targetPlayerId)!;
+              const bBoard = [...curBot.board];
+              const oBoard = [...opp.board];
+              for (let r = 0; r < 3; r++) {
+                const bi = actPlan.ownCol + r * 4;
+                const oi = actPlan.targetCol + r * 4;
+                const tmp = bBoard[bi];
+                bBoard[bi] = oBoard[oi];
+                oBoard[oi] = tmp;
+              }
+              s = syncBotStep({
+                ...s,
+                players: s.players.map(p => {
+                  if (p.id === bot.id) return { ...p, board: bBoard };
+                  if (p.id === opp.id) return { ...p, board: oBoard };
+                  return p;
+                }),
+                pendingHighlight: { player: opp.id, index: actPlan.targetCol, action: 'place' },
+                lastAction: `⚡ ${bot.name} cambia columna con ${opp.name}`,
+              });
+              await sleep(pauseMs * 0.8);
+              s = checkColumnEliminations(s, bot.id);
+              s = checkColumnEliminations(s, opp.id);
+              s = syncBotStep(s);
+              await sleep(300);
+              const cleanState: SyncedGameState = { ...s, pendingHighlight: null };
+              syncBotStep(completeTurn(cleanState, bot.id));
+              return;
+            } else {
+              if (actPlan.useAction && drawn.actionType === 'extra_turn') {
+                s = { ...s, extraTurnsRemaining: (s.extraTurnsRemaining ?? 0) + 1 };
+              }
+              const hid = hiddenIndices(s.players[s.currentPlayerIndex].board);
+              if (hid.length > 0) {
+                const fi = hid[0];
+                const nb = s.players[s.currentPlayerIndex].board.map((c, i) => (i === fi ? { ...c, revealed: true } : c));
+                s = syncBotStep({
+                  ...s,
+                  players: s.players.map(p => (p.id === bot.id ? { ...p, board: nb } : p)),
+                  pendingHighlight: { player: bot.id, index: fi, action: 'flip' },
+                  lastAction: `${bot.name} voltea carta`,
+                });
+                await sleep(pauseMs * 0.65);
+                s = checkColumnEliminations(s, bot.id);
+              }
+              const cleanState: SyncedGameState = { ...s, pendingHighlight: null };
+              syncBotStep(completeTurn(cleanState, bot.id));
+              return;
+            }
+          }
+
+          if (drawn.kind !== 'action') {
+            const placement = decideBotPlacement(
+              s.players[s.currentPlayerIndex].board,
+              drawn,
+              s,
+              level,
+              mem
+            );
+            await sleep(pauseMs * 0.4);
+
+            if (placement.place && placement.placeIndex !== null) {
+              const idx = placement.placeIndex;
+              s = syncBotStep({
+                ...s,
+                pendingHighlight: { player: bot.id, index: idx, action: 'place' },
+                lastAction: `${bot.name} coloca carta`,
               });
               await sleep(pauseMs);
-              newBoard = newBoard.map((c, i) => (i === fi ? { ...c, revealed: true } : c));
-            }
-            s = syncBotStep({
-              ...s,
-              players: s.players.map(p => (p.id === bot.id ? { ...p, board: newBoard } : p)),
-              discard: newDiscard,
-              discardCounts,
-              pendingDraw: null,
-              pendingHighlight:
-                placement.flipIndex !== null
-                  ? { player: bot.id, index: placement.flipIndex, action: 'flip' }
-                  : null,
-              lastAction: `${bot.name} descarta y voltea`,
-            });
-            triggerDiscardPulse();
 
-            await sleep(pauseMs * 0.65);
-            const beforeElim = s.lastAction;
-            s = checkColumnEliminations(s, bot.id);
-            if (s.lastAction !== beforeElim) {
-              s = syncBotStep(s);
-              await sleep(750);
+              const oldCard = s.players[s.currentPlayerIndex].board[idx].card;
+              const newBoard = s.players[s.currentPlayerIndex].board.map((c, i) =>
+                i === idx ? { card: drawn, revealed: true, eliminated: false } : c
+              );
+              let newDiscard = s.discard;
+              let discardCounts = s.discardCounts;
+              if (oldCard) {
+                newDiscard = [oldCard, ...newDiscard];
+                discardCounts = updateDiscardCounts(discardCounts, oldCard);
+              }
+              s = syncBotStep({
+                ...s,
+                players: s.players.map(p => (p.id === bot.id ? { ...p, board: newBoard } : p)),
+                discard: newDiscard,
+                discardCounts,
+                pendingDraw: null,
+                pendingHighlight: { player: bot.id, index: idx, action: 'place' },
+                lastAction: `${bot.name} intercambia`,
+              });
+              if (oldCard) triggerDiscardPulse();
+
+              await sleep(pauseMs * 0.65);
+              const beforeElim = s.lastAction;
+              s = checkColumnEliminations(s, bot.id);
+              if (s.lastAction !== beforeElim) {
+                s = syncBotStep(s);
+                await sleep(750);
+              }
+            } else {
+              const newDiscard = [drawn, ...s.discard];
+              const discardCounts = updateDiscardCounts(s.discardCounts, drawn);
+              let newBoard = s.players[s.currentPlayerIndex].board;
+              if (placement.flipIndex !== null) {
+                const fi = placement.flipIndex;
+                s = syncBotStep({
+                  ...s,
+                  pendingHighlight: { player: bot.id, index: fi, action: 'flip' },
+                  lastAction: `${bot.name} descarta y voltea`,
+                });
+                await sleep(pauseMs);
+                newBoard = newBoard.map((c, i) => (i === fi ? { ...c, revealed: true } : c));
+              }
+              s = syncBotStep({
+                ...s,
+                players: s.players.map(p => (p.id === bot.id ? { ...p, board: newBoard } : p)),
+                discard: newDiscard,
+                discardCounts,
+                pendingDraw: null,
+                pendingHighlight:
+                  placement.flipIndex !== null
+                    ? { player: bot.id, index: placement.flipIndex, action: 'flip' }
+                    : null,
+                lastAction: `${bot.name} descarta y voltea`,
+              });
+              triggerDiscardPulse();
+
+              await sleep(pauseMs * 0.65);
+              const beforeElim = s.lastAction;
+              s = checkColumnEliminations(s, bot.id);
+              if (s.lastAction !== beforeElim) {
+                s = syncBotStep(s);
+                await sleep(750);
+              }
             }
           }
         }
@@ -1109,6 +1562,10 @@ export function useSkyjo() {
     playerTakeDiscard,
     playerDrawDeck,
     playerPlaceCard,
+    playerUseActionCard,
+    playerChooseDrawnTwo,
+    playerResolveActionTarget,
+    playerFinishOrCancelAction,
     playerDiscardDrawn,
     playerFlipHidden,
     nextRound,
