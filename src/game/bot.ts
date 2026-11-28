@@ -54,7 +54,8 @@ function getRemainingDeckAverage(state: GameState): number {
   return totalCards > 0 ? totalPoints / totalCards : 5.3;
 }
 
-// Detecta si hay 2 cartas reveladas iguales (o 1 número + 1 Estrella) en una columna para completarla
+// Detecta si hay 2 cartas reveladas iguales (o 1 número + 1 Estrella) en una columna para completarla.
+// NUNCA completa columnas de 0, -1 o -2 porque eliminarlas tiraría puntos negativos o cero.
 function findColumnCompletion(board: Board, card: Card): number | null {
   if (card.kind === 'action') return null;
   const isStar = card.kind === 'star';
@@ -71,7 +72,7 @@ function findColumnCompletion(board: Board, card: Card): number | null {
     if (revCards.some(r => r.card.kind === 'action')) continue;
 
     if (isStar) {
-      // Estrella completa si hay 2 cartas iguales >= 1 (o 1 carta >= 4 + 1 Estrella)
+      // Estrella completa solo si hay 2 cartas iguales >= 1 (o 1 carta >= 3 + 1 Estrella)
       if (revCards.length === 2) {
         const [a, b] = revCards;
         const targetIdx = cells.find(i => i !== a.idx && i !== b.idx)!;
@@ -81,7 +82,7 @@ function findColumnCompletion(board: Board, card: Card): number | null {
         if (a.card.kind === 'star' && b.card.kind !== 'star' && b.card.value >= 3) return targetIdx;
         if (b.card.kind === 'star' && a.card.kind !== 'star' && a.card.value >= 3) return targetIdx;
       }
-      // Si ya hay 2 iguales en los 3 huecos y el 3º tiene otra carta revelada diferente >= 4, sustituirla
+      // Si ya hay 2 iguales >= 2 en los 3 huecos y el 3º tiene otra carta revelada diferente >= 3, sustituirla
       if (revCards.length === 3) {
         for (let t = 0; t < 3; t++) {
           const others = revCards.filter((_, idx) => idx !== t);
@@ -117,7 +118,7 @@ function findColumnCompletion(board: Board, card: Card): number | null {
   return null;
 }
 
-// Protege parejas iguales y cartas Estrella ya colocadas para no romperlas jamás
+// Protege parejas iguales, cartas <= 0 en pareja y cartas Estrella ya colocadas para no romperlas jamás
 function getProtectedIndices(board: Board): Set<number> {
   const protectedSet = new Set<number>();
   for (let i = 0; i < board.length; i++) {
@@ -210,16 +211,27 @@ function findColumnWithTwoSameVisible(board: Board): { col: number; flipIdx: num
   return null;
 }
 
+// Evita colocar cartas <= 0 o Estrellas en una casilla oculta donde ya hay 2 cartas iguales <= 0
 function findSafeHiddenIndexForLowCard(board: Board, cardValue: number): number | null {
   const hidden = hiddenIndices(board);
   if (hidden.length === 0) return null;
 
   const safe = hidden.filter(h => {
     const col = h % 4;
-    const otherVals = [col, col + 4, col + 8]
+    const otherCards = [col, col + 4, col + 8]
       .filter(i => i !== h && !board[i].eliminated && board[i].revealed && board[i].card !== null)
-      .map(i => board[i].card!.value);
-    return !(otherVals.length === 2 && otherVals[0] === cardValue && otherVals[1] === cardValue);
+      .map(i => board[i].card!);
+
+    if (otherCards.length === 2) {
+      const [c1, c2] = otherCards;
+      if (c1.value <= 0 && c2.value <= 0 && (c1.value === c2.value || c1.kind === 'star' || c2.kind === 'star')) {
+        return false;
+      }
+      if (c1.value === cardValue && c2.value === cardValue) {
+        return false;
+      }
+    }
+    return true;
   });
 
   return safe.length > 0 ? safe[0] : hidden[0];
@@ -282,23 +294,20 @@ export function decideBotAction(
   const opponents = state.players.filter(p => p.id !== bot.id);
   const deckAvg = getRemainingDeckAverage(state);
 
-  // 1. +1 Turno: siempre interesa jugarla salvo si va a cerrar mal
   if (actionType === 'extra_turn') {
     return { useAction: true, reason: 'Juega turno extra' };
   }
 
-  // 2. Espiar: siempre útil si quedan cartas ocultas
   if (actionType === 'peek') {
     const anyHidden = state.players.some(p => hiddenIndices(p.board).length > 0);
     return { useAction: anyHidden, reason: 'Espía cartas ocultas' };
   }
 
-  // 3. Robar 2 y elegir 1: siempre interesa salvo en el último turno si ya tiene todo bajo
   if (actionType === 'draw_two') {
     return { useAction: true, reason: 'Roba 2 cartas para elegir la mejor' };
   }
 
-  // 4. Intercambiar 2 cartas propias: busca juntar 2 cartas iguales en la misma columna
+  // Intercambiar 2 cartas propias: solo junta cartas >= 1 para eliminar columna (nunca junta <= 0)
   if (actionType === 'swap_own') {
     const rev = revealedIndices(bot.board);
     for (let a = 0; a < rev.length; a++) {
@@ -312,11 +321,16 @@ export function decideBotAction(
         const cardB = bot.board[idxB].card!;
         if (cardA.value < 1 && cardA.kind !== 'star') continue;
 
-        // Comprueba si llevar cardA a colB junta pareja o trío
         const colBCells = [colB, colB + 4, colB + 8].filter(i => i !== idxB && !bot.board[i].eliminated);
         const matchesInB = colBCells.filter(
           i => bot.board[i].revealed && bot.board[i].card && (bot.board[i].card!.value === cardA.value || bot.board[i].card!.kind === 'star')
         );
+        // Evita mover una Estrella a una columna donde ya hay cartas <= 0
+        const nonPositiveInB = colBCells.some(
+          i => bot.board[i].revealed && bot.board[i].card && bot.board[i].card!.value <= 0 && bot.board[i].card!.kind !== 'star'
+        );
+        if (cardA.kind === 'star' && nonPositiveInB) continue;
+
         if (matchesInB.length >= 1 && cardB.value !== cardA.value) {
           return {
             useAction: true,
@@ -330,7 +344,7 @@ export function decideBotAction(
     return { useAction: false, reason: 'No mejora columnas propias' };
   }
 
-  // 5. Intercambiar 1 carta propia por 1 de un rival
+  // Intercambiar 1 carta propia alta por 1 baja de un rival
   if (actionType === 'swap_opponent') {
     const myHighIdx = safeHighestVisibleIndex(bot.board) ?? highestVisibleIndex(bot.board);
     const myHighVal = myHighIdx !== null ? visibleCardValueAt(bot.board, myHighIdx) : null;
@@ -368,16 +382,21 @@ export function decideBotAction(
     return { useAction: false, reason: 'Sin objetivo rentable en rivales' };
   }
 
-  // 6. Intercambiar una columna entera por una del rival
+  // Intercambiar una columna entera mala por una buena del rival (nunca regala columnas con <= 0 o Estrellas)
   if (actionType === 'swap_column') {
     let worstMyCol = -1;
     let worstMyScore = -Infinity;
     for (let col = 0; col < 4; col++) {
       const cells = [col, col + 4, col + 8];
       if (cells.some(i => bot.board[i].eliminated)) continue;
+      const hasValuableLowOrStar = cells.some(
+        i => bot.board[i].revealed && bot.board[i].card && (bot.board[i].card!.value <= 0 || bot.board[i].card!.kind === 'star')
+      );
+      if (hasValuableLowOrStar) continue;
+
       const colEst = cells.reduce((sum, i) => {
         const c = bot.board[i];
-        return sum + (c.revealed && c.card ? (c.card.kind === 'star' ? 0 : c.card.value) : deckAvg);
+        return sum + (c.revealed && c.card ? c.card.value : deckAvg);
       }, 0);
       if (colEst > worstMyScore) {
         worstMyScore = colEst;
@@ -488,7 +507,6 @@ function decideHardMove(board: Board, topDiscard: Card | null, state: GameState,
   const hidden = hiddenIndices(board);
   const canCloseNow = hidden.length === 1;
 
-  // Las cartas de acción en el descarte no se pueden reactivar, así que el bot las ignora allí
   if (topDiscard && topDiscard.kind !== 'action') {
     const isStar = topDiscard.kind === 'star';
     const v = isStar ? 0 : topDiscard.value;
@@ -544,7 +562,7 @@ function decideHardPlacement(board: Board, drawnCard: Card, state: GameState, me
   const willingToCloseBlind = !canCloseNow || !bot || shouldCloseRound(bot, state, mem);
   const willingToCloseWithCard = !canCloseNow || !bot || shouldCloseRound(bot, state, mem, drawnValue);
 
-  // 1. Completar columna de 3 iguales (incluye Estrella comodín)
+  // 1. Completar columna de 3 iguales (incluye Estrella comodín, nunca <= 0)
   const compIdx = findColumnCompletion(board, drawnCard);
   if (compIdx !== null) {
     const closesRound = hidden.includes(compIdx) && canCloseNow;
@@ -553,7 +571,8 @@ function decideHardPlacement(board: Board, drawnCard: Card, state: GameState, me
     }
   }
 
-  // Si es una Estrella que no cierra columna aún, intenta colocarla en una columna con 1 carta >= 4 y 1 oculta, o quitar una carta alta
+  // Si es una Estrella que no cierra columna aún, intenta colocarla en una columna con 1 carta >= 3 y 1 oculta,
+  // o sustituir una carta alta sin destruir columnas de <= 0
   if (isStar) {
     for (let col = 0; col < 4; col++) {
       const cells = [col, col + 4, col + 8];
@@ -568,11 +587,25 @@ function decideHardPlacement(board: Board, drawnCard: Card, state: GameState, me
         }
       }
     }
+
     const hi = safeHighestVisibleIndex(board);
     const hiVal = hi !== null ? visibleCardValueAt(board, hi) : null;
     if (hi !== null && hiVal !== null && hiVal >= 4) {
-      return { place: true, placeIndex: hi, flipIndex: null, reason: 'Coloca Estrella por carta media/alta' };
+      const col = hi % 4;
+      const otherCards = [col, col + 4, col + 8]
+        .filter(i => i !== hi && !board[i].eliminated && board[i].revealed && board[i].card !== null)
+        .map(i => board[i].card!);
+      const wouldDestroyNonPositive =
+        otherCards.length === 2 &&
+        otherCards[0].value <= 0 &&
+        otherCards[1].value <= 0 &&
+        (otherCards[0].value === otherCards[1].value || otherCards[0].kind === 'star' || otherCards[1].kind === 'star');
+
+      if (!wouldDestroyNonPositive) {
+        return { place: true, placeIndex: hi, flipIndex: null, reason: 'Coloca Estrella por carta media/alta' };
+      }
     }
+
     const safeHidden = findSafeHiddenIndexForLowCard(board, 0);
     if (safeHidden !== null && willingToCloseWithCard) {
       return { place: true, placeIndex: safeHidden, flipIndex: null, reason: 'Coloca Estrella en oculta' };

@@ -17,24 +17,51 @@ export function RulesModal({ open, onClose }: { open: boolean; onClose: () => vo
           <p><span className="font-semibold text-emerald-400">Preparación:</span> 12 cartas boca abajo en cuadrícula 3×4. Voltea 2 al iniciar. Empieza quien tenga la suma más alta.</p>
           <p><span className="font-semibold text-emerald-400">Turno:</span> Coge del descarte o roba del mazo.</p>
           <ul className="ml-4 list-disc space-y-1 text-slate-300">
-            <li>Del descarte: intercámbiala por una carta de tu tablero (no se pueden coger cartas de Acción del descarte).</li>
+            <li>Del descarte: intercámbiala por una carta de tu tablero.</li>
             <li>Del mazo: colócala en tu tablero, descártala y voltea una oculta, o activa su Acción.</li>
           </ul>
           <p><span className="font-semibold text-emerald-400">Columnas:</span> Si 3 cartas de una columna tienen el mismo valor y están boca arriba, ¡se eliminan!</p>
           <p><span className="font-semibold text-emerald-400">Fin de ronda:</span> Cuando un jugador tiene todo boca arriba. Los demás juegan un último turno cada uno.</p>
           <p><span className="font-semibold text-emerald-400">Duplicar:</span> Si cierras la ronda pero no tienes la puntuación más baja que todos, ¡tus puntos se duplican!</p>
 
-          <div className="pt-2 border-t border-slate-800">
-            <p className="font-semibold text-fuchsia-300 mb-1.5">Expansión Skyjo Action (opcional):</p>
-            <ul className="ml-4 list-disc space-y-1 text-xs text-slate-300">
-              <li><span className="font-bold text-amber-300">★ Estrella (Comodín):</span> Adoptan el valor de sus compañeras de columna para cerrar un trío de 3 iguales. Si acaban sueltas valen 0 puntos.</li>
-              <li><span className="font-bold text-fuchsia-300">⚡ ⇄ Propia:</span> Intercambia 2 cartas de tu propio tablero.</li>
-              <li><span className="font-bold text-fuchsia-300">⚡ ⇄ Rival:</span> Intercambia 1 carta tuya por 1 de un rival.</li>
-              <li><span className="font-bold text-fuchsia-300">⚡ ⇄ Columna:</span> Intercambia 1 columna tuya por 1 de un rival.</li>
-              <li><span className="font-bold text-fuchsia-300">⚡ 👁 Espiar:</span> Mira en secreto hasta 2 cartas boca abajo.</li>
-              <li><span className="font-bold text-fuchsia-300">⚡ ×2 Robar:</span> Roba 2 cartas del mazo, quédate 1 y descarta la otra.</li>
-              <li><span className="font-bold text-fuchsia-300">⚡ +1 Turno:</span> Juega otro turno seguido al acabar este.</li>
-            </ul>
+          {/* Sección detallada de la Expansión Skyjo Action */}
+          <div className="pt-3 border-t border-slate-800 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <p className="font-bold text-fuchsia-300 text-sm">Expansión Skyjo Action (Modo Bots)</p>
+              <span className="text-[10px] bg-fuchsia-500/20 text-fuchsia-300 px-2 py-0.5 rounded-full font-semibold">+34 cartas</span>
+            </div>
+
+            <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-2.5 text-xs space-y-1">
+              <p className="font-bold text-amber-300">★ Estrella Comodín (10 cartas)</p>
+              <p className="text-slate-300">
+                Se juega igual que un número: puedes robarla del mazo o cogerla del descarte y ponerla en tu tablero.
+              </p>
+              <ul className="ml-4 list-disc text-slate-300 space-y-0.5">
+                <li><strong>En columna:</strong> Adopta el valor de sus compañeras iguales (ej. <span className="text-white font-semibold">8 + 8 + ★</span> o <span className="text-white font-semibold">4 + ★ + ★</span> elimina la columna).</li>
+                <li><strong>Puntuación final:</strong> Si acaba la ronda en tu tablero sin cerrar columna, vale <strong>0 puntos</strong>.</li>
+              </ul>
+            </div>
+
+            <div className="bg-fuchsia-500/10 border border-fuchsia-400/30 rounded-xl p-2.5 text-xs space-y-1.5">
+              <p className="font-bold text-fuchsia-300">⚡ Cartas de Acción (24 cartas · 4 de cada)</p>
+              <ul className="ml-4 list-disc text-slate-300 space-y-1">
+                <li><strong className="text-white">PROPIA (Cambio propio):</strong> Intercambia de sitio 2 cartas de tu propio tablero (boca arriba o boca abajo) para juntar parejas y eliminar columnas.</li>
+                <li><strong className="text-white">RIVAL (Robo al rival):</strong> Cambia 1 carta de tu tablero por 1 carta de cualquier rival. Ideal para quitarle un <span className="text-emerald-300 font-semibold">-2</span> o darle un <span className="text-rose-300 font-semibold">12</span>.</li>
+                <li><strong className="text-white">COL. (Cambio de columna):</strong> Intercambia una columna completa (3 cartas) de tu tablero por una columna completa de un rival.</li>
+                <li><strong className="text-white">ESPIAR:</strong> Mira en secreto hasta <strong>2 cartas boca abajo</strong> (tuyas o de rivales). Después volteas 1 carta oculta tuya para terminar el turno.</li>
+                <li><strong className="text-white">x2 (Robar doble):</strong> Robas 2 cartas del mazo, te quedas la que más te convenga y descartas la otra.</li>
+                <li><strong className="text-white">+1 (Turno extra):</strong> Volteas 1 carta oculta tuya para cerrar este turno e inmediatamente juegas otro turno completo seguido.</li>
+              </ul>
+            </div>
+
+            <div className="bg-slate-800/70 border border-slate-700 rounded-xl p-2.5 text-[11px] text-slate-300 space-y-1">
+              <p className="font-semibold text-white">Normas importantes de las cartas especiales:</p>
+              <ul className="ml-4 list-disc space-y-0.5">
+                <li>Las cartas de <strong>Acción (⚡)</strong> solo se activan si las robas del mazo. Si no quieres usarlas, puedes descartarlas y voltear una oculta.</li>
+                <li><strong>Nunca</strong> se puede coger una carta de Acción del montón de descartes.</li>
+                <li>Si te toca una carta de Acción boca abajo en tu tablero inicial y la volteas, <strong>no hace efecto</strong>, pero al final de la ronda vale <strong>0 puntos</strong>.</li>
+              </ul>
+            </div>
           </div>
 
           <div className="pt-2">

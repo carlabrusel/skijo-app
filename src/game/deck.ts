@@ -57,26 +57,27 @@ export function shuffle<T>(arr: T[]): T[] {
 export function actionLabel(actionType?: ActionType): { short: string; title: string; desc: string } {
   switch (actionType) {
     case 'swap_own':
-      return { short: '⇄ Propia', title: 'Cambio propio', desc: 'Intercambia 2 cartas de tu propio tablero.' };
+      return { short: 'PROPIA', title: 'Cambio propio', desc: 'Intercambia 2 cartas de tu propio tablero.' };
     case 'swap_opponent':
-      return { short: '⇄ Rival', title: 'Robo al rival', desc: 'Intercambia 1 carta tuya por 1 de un rival.' };
+      return { short: 'RIVAL', title: 'Robo al rival', desc: 'Intercambia 1 carta tuya por 1 de un rival.' };
     case 'swap_column':
-      return { short: '⇄ Columna', title: 'Cambio de columna', desc: 'Intercambia 1 columna tuya por 1 de un rival.' };
+      return { short: 'COL.', title: 'Cambio de columna', desc: 'Intercambia 1 columna tuya por 1 de un rival.' };
     case 'peek':
-      return { short: '👁 Espiar', title: 'Espiar cartas', desc: 'Mira en secreto hasta 2 cartas boca abajo.' };
+      return { short: 'ESPIAR', title: 'Espiar cartas', desc: 'Mira en secreto hasta 2 cartas boca abajo.' };
     case 'draw_two':
-      return { short: '×2 Robar', title: 'Robar doble', desc: 'Roba 2 cartas del mazo, quédate 1 y descarta la otra.' };
+      return { short: 'x2', title: 'Robar doble', desc: 'Roba 2 cartas del mazo, quédate 1 y descarta la otra.' };
     case 'extra_turn':
-      return { short: '+1 Turno', title: 'Turno extra', desc: 'Al terminar este turno juegas otro turno seguido.' };
+      return { short: '+1', title: 'Turno extra', desc: 'Al terminar este turno juegas otro turno seguido.' };
     default:
-      return { short: '⚡ Acción', title: 'Carta de Acción', desc: 'Efecto especial.' };
+      return { short: 'ACC.', title: 'Carta de Acción', desc: 'Efecto especial.' };
   }
 }
 
 export function cardGradient(cardOrValue: Card | number): { bg: string; text: string; isDarkText: boolean } {
-  if (typeof cardOrValue !== 'number') {
+  // Si es un objeto Card
+  if (typeof cardOrValue === 'object' && cardOrValue !== null) {
     if (cardOrValue.kind === 'star') {
-      return { bg: 'from-amber-400 via-yellow-500 to-orange-500', text: 'text-slate-950', isDarkText: true };
+      return { bg: 'from-amber-300 via-yellow-400 to-amber-500', text: 'text-amber-950', isDarkText: true };
     }
     if (cardOrValue.kind === 'action') {
       return { bg: 'from-fuchsia-600 via-purple-700 to-indigo-900', text: 'text-white', isDarkText: false };
@@ -84,7 +85,8 @@ export function cardGradient(cardOrValue: Card | number): { bg: string; text: st
     return cardGradient(cardOrValue.value);
   }
 
-  const value = cardOrValue;
+  // Colores clásicos originales de Skyjo
+  const value = Number(cardOrValue);
   if (value <= -1) {
     return { bg: 'from-indigo-700 to-purple-800', text: 'text-white', isDarkText: false };
   }

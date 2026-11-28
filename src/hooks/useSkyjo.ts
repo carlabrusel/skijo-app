@@ -504,7 +504,12 @@ export function useSkyjo() {
         const { board: nb, eliminatedCards } = eliminateColumns(board, cols);
         board = nb;
         elimCount += eliminatedCards.length;
-        const elimSorted = [...eliminatedCards].sort((a, b) => a.card!.value - b.card!.value);
+        const elimSorted = [...eliminatedCards].sort((a, b) => {
+          const aStar = a.card?.kind === 'star' ? 1 : 0;
+          const bStar = b.card?.kind === 'star' ? 1 : 0;
+          if (aStar !== bStar) return aStar - bStar; // El número va primero (arriba del descarte) y el comodín debajo
+          return a.card!.value - b.card!.value;
+        });
         discard = [...elimSorted.map(c => c.card!), ...discard];
         for (const c of elimSorted) {
           discardCounts = updateDiscardCounts(discardCounts, c.card!);
@@ -987,7 +992,6 @@ export function useSkyjo() {
         if (pa.actionType === 'peek') {
           if (targetCell.revealed) return prev;
           const already = pa.peekedCards ?? [];
-          // Bloquea cualquier clic si ya ha mirado 2 cartas
           if (already.length >= 2) return prev;
           if (already.some(p => p.playerId === targetPlayerId && p.index === cellIndex)) return prev;
 
