@@ -42,7 +42,7 @@ function buildPlayers(config: GameConfig): Player[] {
 }
 
 function dealNewRound(state: SyncedGameState, isOnline = false): SyncedGameState {
-  const withExpansion = Boolean(!isOnline && state.config.withExpansion);
+  const withExpansion = Boolean(state.config.withExpansion);
   const deck = shuffle(createDeck(withExpansion));
   const players = state.players.map(p => {
     const cards = deck.splice(0, 12);
@@ -238,17 +238,29 @@ export function useSkyjo() {
     async (nextState: SyncedGameState) => {
       if (!roomCode) return;
       const nextRev = Math.max(localRevRef.current + 1, (nextState._rev ?? 0) + 1);
-      const stamped: SyncedGameState = { ...nextState, _rev: nextRev };
+
+      // Si el jugador activo está usando Espiar, oculta el valor revelado en el mensaje que viaja a los rivales
+      const sanitizedForRemote: SyncedGameState =
+        nextState.stage === 'action_resolve' &&
+        nextState.pendingAction?.actionType === 'peek' &&
+        nextState.lastAction.startsWith('👁')
+          ? {
+              ...nextState,
+              _rev: nextRev,
+              lastAction: `👁 ${nextState.players[nextState.currentPlayerIndex]?.name ?? 'Jugador'} está espiando cartas (${nextState.pendingAction.peekedCards?.length ?? 0}/2)...`,
+            }
+          : { ...nextState, _rev: nextRev };
+
       localRevRef.current = nextRev;
       syncLockUntilRef.current = Date.now() + 1800;
 
       if (pushInFlightRef.current) {
-        queuedPushStateRef.current = stamped;
+        queuedPushStateRef.current = sanitizedForRemote;
         return;
       }
 
       pushInFlightRef.current = true;
-      let toSend: SyncedGameState | null = stamped;
+      let toSend: SyncedGameState | null = sanitizedForRemote;
       try {
         while (toSend) {
           queuedPushStateRef.current = null;
@@ -352,7 +364,7 @@ export function useSkyjo() {
   }, []);
 
   const startOnlineGame = useCallback(
-    async (room: OnlineRoomRow, myPlayerId: string, fillWithBots: boolean) => {
+    async (room: OnlineRoomRow, myPlayerId: string, fillWithBots: boolean, withExpansion = false) => {
       roundTurnsRef.current = 0;
       pendingFinishRef.current = null;
       const players: Player[] = room.players.map(p => ({
@@ -378,7 +390,7 @@ export function useSkyjo() {
       }
 
       const initial = dealNewRound(
-        freshState({ playerCount: players.length, aiLevel: 'hard', withExpansion: false }, players),
+        freshState({ playerCount: players.length, aiLevel: 'hard', withExpansion }, players),
         true
       );
       localRevRef.current = initial._rev ?? 1;
@@ -507,7 +519,7 @@ export function useSkyjo() {
         const elimSorted = [...eliminatedCards].sort((a, b) => {
           const aStar = a.card?.kind === 'star' ? 1 : 0;
           const bStar = b.card?.kind === 'star' ? 1 : 0;
-          if (aStar !== bStar) return aStar - bStar; // El número va primero (arriba del descarte) y el comodín debajo
+          if (aStar !== bStar) return aStar - bStar;
           return a.card!.value - b.card!.value;
         });
         discard = [...elimSorted.map(c => c.card!), ...discard];
@@ -647,7 +659,9 @@ export function useSkyjo() {
         pendingAction: null,
         lastAction: samePlayer.isBot
           ? `${samePlayer.name} juega su turno extra...`
-          : '⚡ ¡Turno extra! Roba del mazo o coge del descarte',
+          : samePlayer.id === localPlayerId
+            ? '⚡ ¡Turno extra! Roba del mazo o coge del descarte'
+            : `⚡ ¡Turno extra de ${samePlayer.name}!`,
       };
     }
 
@@ -674,7 +688,7 @@ export function useSkyjo() {
       pendingDraw: null,
       pendingAction: null,
     };
-  }, []);
+  }, [localPlayerId]);
 
   const completeTurn = useCallback(
     (s: SyncedGameState, actorId: string): SyncedGameState => {
@@ -988,7 +1002,6 @@ export function useSkyjo() {
         const targetCell = targetPlayer.board[cellIndex];
         if (!targetCell || targetCell.eliminated || !targetCell.card) return prev;
 
-        // 1. PEEK (Espiar ESTRICTAMENTE hasta 2 cartas boca abajo)
         if (pa.actionType === 'peek') {
           if (targetCell.revealed) return prev;
           const already = pa.peekedCards ?? [];
@@ -1022,7 +1035,6 @@ export function useSkyjo() {
           };
         }
 
-        // 2. SWAP OWN
         if (pa.actionType === 'swap_own') {
           if (targetPlayerId !== localPlayerId) return prev;
           if (pa.step === 'select_first') {
@@ -1053,7 +1065,6 @@ export function useSkyjo() {
           }
         }
 
-        // 3. SWAP OPPONENT
         if (pa.actionType === 'swap_opponent') {
           if (pa.step === 'select_first') {
             if (targetPlayerId !== localPlayerId) return prev;
@@ -1093,7 +1104,6 @@ export function useSkyjo() {
           }
         }
 
-        // 4. SWAP COLUMN
         if (pa.actionType === 'swap_column') {
           const clickedCol = cellIndex % 4;
           const colCells = [clickedCol, clickedCol + 4, clickedCol + 8];

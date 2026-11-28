@@ -16,7 +16,7 @@ import {
 interface SetupModalProps {
   open: boolean;
   onStart: (playerCount: number, aiLevel: AILevel, withExpansion: boolean) => void;
-  onStartOnline: (room: OnlineRoomRow, myPlayerId: string, fillWithBots: boolean) => void;
+  onStartOnline: (room: OnlineRoomRow, myPlayerId: string, fillWithBots: boolean, withExpansion: boolean) => void;
   onJoinStartedOnline: (room: OnlineRoomRow, myPlayerId: string) => void;
   memory: AdaptiveMemory;
   onResetMemory: () => void;
@@ -57,6 +57,7 @@ export function SetupModal({
   const [invitedCode, setInvitedCode] = useState<string | null>(null);
   const [room, setRoom] = useState<OnlineRoomRow | null>(null);
   const [fillWithBots, setFillWithBots] = useState(false);
+  const [onlineWithExpansion, setOnlineWithExpansion] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -512,6 +513,38 @@ export function SetupModal({
 
               {isHost ? (
                 <>
+                  <div>
+                    <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mb-1.5">
+                      <Star size={14} className="text-amber-400" /> Modo de mazo
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setOnlineWithExpansion(false)}
+                        className={`p-2 rounded-lg border-2 text-left transition-all ${
+                          !onlineWithExpansion
+                            ? 'border-emerald-400 bg-emerald-900/30 text-white'
+                            : 'border-slate-600 bg-slate-700/30 text-slate-300 hover:border-slate-500'
+                        }`}
+                      >
+                        <p className="font-bold text-xs">Clásico</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">150 cartas normales</p>
+                      </button>
+                      <button
+                        onClick={() => setOnlineWithExpansion(true)}
+                        className={`p-2 rounded-lg border-2 text-left transition-all ${
+                          onlineWithExpansion
+                            ? 'border-fuchsia-400 bg-fuchsia-950/40 text-white'
+                            : 'border-slate-600 bg-slate-700/30 text-slate-300 hover:border-slate-500'
+                        }`}
+                      >
+                        <p className="font-bold text-xs flex items-center gap-1">
+                          Con Expansión <span className="text-[9px] bg-fuchsia-500/30 text-fuchsia-200 px-1.5 rounded">Action</span>
+                        </p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">+ Estrellas y Acciones</p>
+                      </button>
+                    </div>
+                  </div>
+
                   {room.players.length < 4 && (
                     <label className="flex items-center gap-2 text-xs text-slate-300 bg-slate-900/40 p-2.5 rounded-lg border border-slate-700/60 cursor-pointer">
                       <input
@@ -529,7 +562,7 @@ export function SetupModal({
                       const currentRoom = room;
                       sessionStorage.removeItem(LOBBY_STORAGE_KEY);
                       setRoom(null);
-                      onStartOnline(currentRoom, myId, fillWithBots);
+                      onStartOnline(currentRoom, myId, fillWithBots, onlineWithExpansion);
                     }}
                     disabled={room.players.length < 2 && !fillWithBots}
                     className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 text-sm"
